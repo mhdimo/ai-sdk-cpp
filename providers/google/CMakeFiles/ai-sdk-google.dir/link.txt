@@ -1,0 +1,2 @@
+/usr/bin/ar qc libai-sdk-google.a "CMakeFiles/ai-sdk-google.dir/src/google_provider.cpp.o" "CMakeFiles/ai-sdk-google.dir/src/google_model.cpp.o"
+/usr/bin/ranlib libai-sdk-google.a

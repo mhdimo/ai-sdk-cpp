@@ -1,0 +1,663 @@
+Start testing: May 18 19:22 CEST
+----------------------------------------------------------
+1/33 Testing: JsonSchema string type
+1/33 Test: JsonSchema string type
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "JsonSchema string type"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"JsonSchema string type" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "JsonSchema string type"
+Randomness seeded to: 1634852911
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"JsonSchema string type" end time: May 18 19:22 CEST
+"JsonSchema string type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/33 Testing: JsonSchema number type
+2/33 Test: JsonSchema number type
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "JsonSchema number type"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"JsonSchema number type" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "JsonSchema number type"
+Randomness seeded to: 1646425690
+===============================================================================
+All tests passed (1 assertion in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"JsonSchema number type" end time: May 18 19:22 CEST
+"JsonSchema number type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/33 Testing: JsonSchema object type
+3/33 Test: JsonSchema object type
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "JsonSchema object type"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"JsonSchema object type" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "JsonSchema object type"
+Randomness seeded to: 3579113452
+===============================================================================
+All tests passed (5 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"JsonSchema object type" end time: May 18 19:22 CEST
+"JsonSchema object type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/33 Testing: JsonSchema array type
+4/33 Test: JsonSchema array type
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "JsonSchema array type"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"JsonSchema array type" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "JsonSchema array type"
+Randomness seeded to: 1376334656
+===============================================================================
+All tests passed (4 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"JsonSchema array type" end time: May 18 19:22 CEST
+"JsonSchema array type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/33 Testing: JsonSchema enum type
+5/33 Test: JsonSchema enum type
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "JsonSchema enum type"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"JsonSchema enum type" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "JsonSchema enum type"
+Randomness seeded to: 1953375339
+===============================================================================
+All tests passed (1 assertion in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"JsonSchema enum type" end time: May 18 19:22 CEST
+"JsonSchema enum type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/33 Testing: SseParser parses basic event
+6/33 Test: SseParser parses basic event
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser parses basic event"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser parses basic event" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser parses basic event"
+Randomness seeded to: 1162687743
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser parses basic event" end time: May 18 19:22 CEST
+"SseParser parses basic event" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/33 Testing: SseParser parses named event
+7/33 Test: SseParser parses named event
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser parses named event"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser parses named event" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser parses named event"
+Randomness seeded to: 3048492411
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser parses named event" end time: May 18 19:22 CEST
+"SseParser parses named event" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/33 Testing: SseParser handles multi-line data
+8/33 Test: SseParser handles multi-line data
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser handles multi-line data"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser handles multi-line data" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser handles multi-line data"
+Randomness seeded to: 1316020552
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser handles multi-line data" end time: May 18 19:22 CEST
+"SseParser handles multi-line data" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/33 Testing: SseParser skips comments
+9/33 Test: SseParser skips comments
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser skips comments"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser skips comments" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser skips comments"
+Randomness seeded to: 184867986
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser skips comments" end time: May 18 19:22 CEST
+"SseParser skips comments" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/33 Testing: SseParser handles partial chunks
+10/33 Test: SseParser handles partial chunks
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser handles partial chunks"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser handles partial chunks" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser handles partial chunks"
+Randomness seeded to: 2585841392
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser handles partial chunks" end time: May 18 19:22 CEST
+"SseParser handles partial chunks" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/33 Testing: SseParser handles multiple events
+11/33 Test: SseParser handles multiple events
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser handles multiple events"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser handles multiple events" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser handles multiple events"
+Randomness seeded to: 1280975751
+===============================================================================
+All tests passed (4 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser handles multiple events" end time: May 18 19:22 CEST
+"SseParser handles multiple events" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/33 Testing: SseParser handles id field
+12/33 Test: SseParser handles id field
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser handles id field"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser handles id field" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser handles id field"
+Randomness seeded to: 842601552
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser handles id field" end time: May 18 19:22 CEST
+"SseParser handles id field" time elapsed: 00:00:00
+----------------------------------------------------------
+
+13/33 Testing: SseParser handles CRLF line endings
+13/33 Test: SseParser handles CRLF line endings
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser handles CRLF line endings"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser handles CRLF line endings" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser handles CRLF line endings"
+Randomness seeded to: 2591673353
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser handles CRLF line endings" end time: May 18 19:22 CEST
+"SseParser handles CRLF line endings" time elapsed: 00:00:00
+----------------------------------------------------------
+
+14/33 Testing: SseParser ignores empty data dispatches
+14/33 Test: SseParser ignores empty data dispatches
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SseParser ignores empty data dispatches"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SseParser ignores empty data dispatches" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SseParser ignores empty data dispatches"
+Randomness seeded to: 1778886955
+===============================================================================
+All tests passed (1 assertion in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SseParser ignores empty data dispatches" end time: May 18 19:22 CEST
+"SseParser ignores empty data dispatches" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/33 Testing: Validator validates string type
+15/33 Test: Validator validates string type
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Validator validates string type"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Validator validates string type" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Validator validates string type"
+Randomness seeded to: 387583975
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Validator validates string type" end time: May 18 19:22 CEST
+"Validator validates string type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+16/33 Testing: Validator validates number type
+16/33 Test: Validator validates number type
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Validator validates number type"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Validator validates number type" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Validator validates number type"
+Randomness seeded to: 3223427506
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Validator validates number type" end time: May 18 19:22 CEST
+"Validator validates number type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+17/33 Testing: Validator validates object with required fields
+17/33 Test: Validator validates object with required fields
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Validator validates object with required fields"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Validator validates object with required fields" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Validator validates object with required fields"
+Randomness seeded to: 1685688091
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Validator validates object with required fields" end time: May 18 19:22 CEST
+"Validator validates object with required fields" time elapsed: 00:00:00
+----------------------------------------------------------
+
+18/33 Testing: Validator validates nested objects
+18/33 Test: Validator validates nested objects
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Validator validates nested objects"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Validator validates nested objects" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Validator validates nested objects"
+Randomness seeded to: 2494593917
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Validator validates nested objects" end time: May 18 19:22 CEST
+"Validator validates nested objects" time elapsed: 00:00:00
+----------------------------------------------------------
+
+19/33 Testing: Validator rejects additional properties
+19/33 Test: Validator rejects additional properties
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Validator rejects additional properties"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Validator rejects additional properties" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Validator rejects additional properties"
+Randomness seeded to: 1876900372
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Validator rejects additional properties" end time: May 18 19:22 CEST
+"Validator rejects additional properties" time elapsed: 00:00:00
+----------------------------------------------------------
+
+20/33 Testing: Validator validates arrays
+20/33 Test: Validator validates arrays
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Validator validates arrays"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Validator validates arrays" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Validator validates arrays"
+Randomness seeded to: 234043637
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Validator validates arrays" end time: May 18 19:22 CEST
+"Validator validates arrays" time elapsed: 00:00:00
+----------------------------------------------------------
+
+21/33 Testing: Validator validates enum values
+21/33 Test: Validator validates enum values
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Validator validates enum values"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Validator validates enum values" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Validator validates enum values"
+Randomness seeded to: 2765881981
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Validator validates enum values" end time: May 18 19:22 CEST
+"Validator validates enum values" time elapsed: 00:00:00
+----------------------------------------------------------
+
+22/33 Testing: SystemMessage construction
+22/33 Test: SystemMessage construction
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "SystemMessage construction"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"SystemMessage construction" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "SystemMessage construction"
+Randomness seeded to: 4248871976
+===============================================================================
+All tests passed (1 assertion in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"SystemMessage construction" end time: May 18 19:22 CEST
+"SystemMessage construction" time elapsed: 00:00:00
+----------------------------------------------------------
+
+23/33 Testing: UserMessage with text content
+23/33 Test: UserMessage with text content
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "UserMessage with text content"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"UserMessage with text content" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "UserMessage with text content"
+Randomness seeded to: 3597772647
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"UserMessage with text content" end time: May 18 19:22 CEST
+"UserMessage with text content" time elapsed: 00:00:00
+----------------------------------------------------------
+
+24/33 Testing: AssistantMessage with tool call
+24/33 Test: AssistantMessage with tool call
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "AssistantMessage with tool call"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"AssistantMessage with tool call" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "AssistantMessage with tool call"
+Randomness seeded to: 4284466813
+===============================================================================
+All tests passed (4 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"AssistantMessage with tool call" end time: May 18 19:22 CEST
+"AssistantMessage with tool call" time elapsed: 00:00:00
+----------------------------------------------------------
+
+25/33 Testing: Message variant holds different types
+25/33 Test: Message variant holds different types
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Message variant holds different types"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Message variant holds different types" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Message variant holds different types"
+Randomness seeded to: 736722962
+===============================================================================
+All tests passed (3 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Message variant holds different types" end time: May 18 19:22 CEST
+"Message variant holds different types" time elapsed: 00:00:00
+----------------------------------------------------------
+
+26/33 Testing: ToolMessage with results
+26/33 Test: ToolMessage with results
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "ToolMessage with results"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"ToolMessage with results" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "ToolMessage with results"
+Randomness seeded to: 301963999
+===============================================================================
+All tests passed (4 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"ToolMessage with results" end time: May 18 19:22 CEST
+"ToolMessage with results" time elapsed: 00:00:00
+----------------------------------------------------------
+
+27/33 Testing: CancellationToken starts uncancelled
+27/33 Test: CancellationToken starts uncancelled
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "CancellationToken starts uncancelled"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"CancellationToken starts uncancelled" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "CancellationToken starts uncancelled"
+Randomness seeded to: 692431676
+===============================================================================
+All tests passed (1 assertion in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"CancellationToken starts uncancelled" end time: May 18 19:22 CEST
+"CancellationToken starts uncancelled" time elapsed: 00:00:00
+----------------------------------------------------------
+
+28/33 Testing: CancellationToken reflects cancel
+28/33 Test: CancellationToken reflects cancel
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "CancellationToken reflects cancel"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"CancellationToken reflects cancel" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "CancellationToken reflects cancel"
+Randomness seeded to: 631935109
+===============================================================================
+All tests passed (1 assertion in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"CancellationToken reflects cancel" end time: May 18 19:22 CEST
+"CancellationToken reflects cancel" time elapsed: 00:00:00
+----------------------------------------------------------
+
+29/33 Testing: throw_if_cancelled throws when cancelled
+29/33 Test: throw_if_cancelled throws when cancelled
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "throw_if_cancelled throws when cancelled"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"throw_if_cancelled throws when cancelled" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "throw_if_cancelled throws when cancelled"
+Randomness seeded to: 2825578434
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"throw_if_cancelled throws when cancelled" end time: May 18 19:22 CEST
+"throw_if_cancelled throws when cancelled" time elapsed: 00:00:00
+----------------------------------------------------------
+
+30/33 Testing: on_cancel callback fires on cancel
+30/33 Test: on_cancel callback fires on cancel
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "on_cancel callback fires on cancel"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"on_cancel callback fires on cancel" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "on_cancel callback fires on cancel"
+Randomness seeded to: 3486643350
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"on_cancel callback fires on cancel" end time: May 18 19:22 CEST
+"on_cancel callback fires on cancel" time elapsed: 00:00:00
+----------------------------------------------------------
+
+31/33 Testing: on_cancel callback fires immediately if already cancelled
+31/33 Test: on_cancel callback fires immediately if already cancelled
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "on_cancel callback fires immediately if already cancelled"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"on_cancel callback fires immediately if already cancelled" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "on_cancel callback fires immediately if already cancelled"
+Randomness seeded to: 4197944832
+===============================================================================
+All tests passed (1 assertion in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"on_cancel callback fires immediately if already cancelled" end time: May 18 19:22 CEST
+"on_cancel callback fires immediately if already cancelled" time elapsed: 00:00:00
+----------------------------------------------------------
+
+32/33 Testing: Multiple tokens from same source
+32/33 Test: Multiple tokens from same source
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Multiple tokens from same source"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Multiple tokens from same source" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Multiple tokens from same source"
+Randomness seeded to: 3884316407
+===============================================================================
+All tests passed (4 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Multiple tokens from same source" end time: May 18 19:22 CEST
+"Multiple tokens from same source" time elapsed: 00:00:00
+----------------------------------------------------------
+
+33/33 Testing: Default token is never cancelled
+33/33 Test: Default token is never cancelled
+Command: "/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/ai-sdk-tests" "Default token is never cancelled"
+Directory: /Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit
+"Default token is never cancelled" start time: May 18 19:22 CEST
+Output:
+----------------------------------------------------------
+Filters: "Default token is never cancelled"
+Randomness seeded to: 1032718078
+===============================================================================
+All tests passed (2 assertions in 1 test case)
+
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"Default token is never cancelled" end time: May 18 19:22 CEST
+"Default token is never cancelled" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: May 18 19:22 CEST

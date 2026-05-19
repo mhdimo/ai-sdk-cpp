@@ -1,0 +1,2 @@
+/usr/bin/ar qc libai-sdk-cohere.a "CMakeFiles/ai-sdk-cohere.dir/src/cohere_provider.cpp.o"
+/usr/bin/ranlib libai-sdk-cohere.a

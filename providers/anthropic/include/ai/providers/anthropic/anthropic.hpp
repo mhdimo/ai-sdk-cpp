@@ -1,0 +1,51 @@
+#pragma once
+
+#include <ai/model/provider.hpp>
+#include <ai/model/file_storage.hpp>
+#include <ai/http/client.hpp>
+#include <boost/asio.hpp>
+#include <boost/json.hpp>
+#include <string>
+#include <optional>
+#include <functional>
+#include <vector>
+
+namespace ai::providers::anthropic {
+
+struct AnthropicBuiltinTool {
+    std::string type;  // "web_search_20260209", "code_execution_20250522", etc.
+    std::string name;
+    boost::json::object config;  // tool-specific config
+};
+
+struct AnthropicOptions {
+    std::optional<std::string> api_key;
+    std::optional<std::string> auth_token;
+    std::string base_url = "https://api.anthropic.com";
+    std::optional<std::string> api_version;
+    boost::asio::io_context& io_context;
+    std::optional<std::function<http::Headers()>> extra_headers;
+};
+
+class AnthropicProvider : public Provider {
+public:
+    explicit AnthropicProvider(AnthropicOptions options);
+
+    LanguageModelPtr language_model(std::string_view model_id) override;
+    FileStoragePtr file_storage();
+    std::string_view provider_id() const override { return "anthropic"; }
+
+    const AnthropicOptions& options() const { return options_; }
+    http::Headers auth_headers() const;
+    std::string messages_url() const;
+    http::HttpClient& http_client() { return http_client_; }
+
+private:
+    AnthropicOptions options_;
+    http::HttpClient http_client_;
+    std::string resolved_api_key_;
+};
+
+ProviderPtr create_anthropic(AnthropicOptions options);
+
+} // namespace ai::providers::anthropic

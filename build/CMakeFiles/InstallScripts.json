@@ -1,0 +1,28 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/_deps/catch2-build/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/_deps/catch2-build/src/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/anthropic/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/openai/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/google/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/deepseek/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/moonshotai/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/bedrock/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/openai-compatible/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/xai/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/mistral/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/groq/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/fireworks/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/togetherai/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/perplexity/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/providers/cohere/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/cli/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/bindings/c/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/tests/unit/cmake_install.cmake",
+		"/Users/mihaldmo/ai/ai-sdk-cpp/build/examples/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

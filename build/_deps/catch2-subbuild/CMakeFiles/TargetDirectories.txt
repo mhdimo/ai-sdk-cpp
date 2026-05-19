@@ -1,0 +1,3 @@
+/Users/mihaldmo/ai/ai-sdk-cpp/build/_deps/catch2-subbuild/CMakeFiles/catch2-populate.dir
+/Users/mihaldmo/ai/ai-sdk-cpp/build/_deps/catch2-subbuild/CMakeFiles/edit_cache.dir
+/Users/mihaldmo/ai/ai-sdk-cpp/build/_deps/catch2-subbuild/CMakeFiles/rebuild_cache.dir

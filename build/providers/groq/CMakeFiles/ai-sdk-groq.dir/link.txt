@@ -1,0 +1,2 @@
+/usr/bin/ar qc libai-sdk-groq.a "CMakeFiles/ai-sdk-groq.dir/src/groq_provider.cpp.o"
+/usr/bin/ranlib libai-sdk-groq.a

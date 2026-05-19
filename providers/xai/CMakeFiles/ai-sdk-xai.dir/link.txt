@@ -1,0 +1,2 @@
+/usr/bin/ar qc libai-sdk-xai.a "CMakeFiles/ai-sdk-xai.dir/src/xai_provider.cpp.o"
+/usr/bin/ranlib libai-sdk-xai.a

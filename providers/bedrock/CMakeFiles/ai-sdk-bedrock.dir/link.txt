@@ -1,0 +1,2 @@
+/usr/bin/ar qc libai-sdk-bedrock.a "CMakeFiles/ai-sdk-bedrock.dir/src/bedrock_provider.cpp.o" "CMakeFiles/ai-sdk-bedrock.dir/src/bedrock_model.cpp.o" "CMakeFiles/ai-sdk-bedrock.dir/src/sigv4.cpp.o"
+/usr/bin/ranlib libai-sdk-bedrock.a

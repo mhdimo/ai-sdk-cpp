@@ -1,0 +1,2 @@
+/usr/bin/ar qc libai-sdk-moonshotai.a "CMakeFiles/ai-sdk-moonshotai.dir/src/moonshotai_provider.cpp.o"
+/usr/bin/ranlib libai-sdk-moonshotai.a
