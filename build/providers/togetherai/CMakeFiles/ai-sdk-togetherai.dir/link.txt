@@ -1,2 +1,0 @@
-/usr/bin/ar qc libai-sdk-togetherai.a "CMakeFiles/ai-sdk-togetherai.dir/src/togetherai_provider.cpp.o"
-/usr/bin/ranlib libai-sdk-togetherai.a

@@ -1,2 +1,0 @@
-/usr/bin/ar qc libai-sdk-anthropic.a "CMakeFiles/ai-sdk-anthropic.dir/src/anthropic_provider.cpp.o" "CMakeFiles/ai-sdk-anthropic.dir/src/anthropic_model.cpp.o" "CMakeFiles/ai-sdk-anthropic.dir/src/anthropic_file_storage.cpp.o" "CMakeFiles/ai-sdk-anthropic.dir/src/anthropic_batch.cpp.o" "CMakeFiles/ai-sdk-anthropic.dir/src/convert_prompt.cpp.o" "CMakeFiles/ai-sdk-anthropic.dir/src/parse_response.cpp.o"
-/usr/bin/ranlib libai-sdk-anthropic.a

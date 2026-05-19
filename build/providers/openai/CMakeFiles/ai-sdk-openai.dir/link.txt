@@ -1,2 +1,0 @@
-/usr/bin/ar qc libai-sdk-openai.a "CMakeFiles/ai-sdk-openai.dir/src/openai_model.cpp.o" "CMakeFiles/ai-sdk-openai.dir/src/openai_embedding.cpp.o" "CMakeFiles/ai-sdk-openai.dir/src/openai_responses_model.cpp.o" "CMakeFiles/ai-sdk-openai.dir/src/openai_batch.cpp.o" "CMakeFiles/ai-sdk-openai.dir/src/openai_realtime.cpp.o" "CMakeFiles/ai-sdk-openai.dir/src/convert_prompt.cpp.o" "CMakeFiles/ai-sdk-openai.dir/src/parse_response.cpp.o"
-/usr/bin/ranlib libai-sdk-openai.a

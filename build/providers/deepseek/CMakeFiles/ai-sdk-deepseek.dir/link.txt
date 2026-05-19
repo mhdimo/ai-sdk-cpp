@@ -1,2 +1,0 @@
-/usr/bin/ar qc libai-sdk-deepseek.a "CMakeFiles/ai-sdk-deepseek.dir/src/deepseek_provider.cpp.o"
-/usr/bin/ranlib libai-sdk-deepseek.a

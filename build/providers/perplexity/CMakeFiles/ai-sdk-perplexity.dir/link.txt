@@ -1,2 +1,0 @@
-/usr/bin/ar qc libai-sdk-perplexity.a "CMakeFiles/ai-sdk-perplexity.dir/src/perplexity_provider.cpp.o"
-/usr/bin/ranlib libai-sdk-perplexity.a

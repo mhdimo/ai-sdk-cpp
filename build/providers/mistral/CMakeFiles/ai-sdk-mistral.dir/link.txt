@@ -1,2 +1,0 @@
-/usr/bin/ar qc libai-sdk-mistral.a "CMakeFiles/ai-sdk-mistral.dir/src/mistral_provider.cpp.o"
-/usr/bin/ranlib libai-sdk-mistral.a

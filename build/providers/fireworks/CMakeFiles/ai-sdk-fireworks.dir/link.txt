@@ -1,2 +1,0 @@
-/usr/bin/ar qc libai-sdk-fireworks.a "CMakeFiles/ai-sdk-fireworks.dir/src/fireworks_provider.cpp.o"
-/usr/bin/ranlib libai-sdk-fireworks.a
