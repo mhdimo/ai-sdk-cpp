@@ -1,0 +1,23 @@
+# Build directories
+build/
+_deps/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+Makefile
+compile_commands.json
+
+# Build artifacts
+*.a
+*.o
+*.so
+*.dylib
+*.dll
+
+# macOS
+.DS_Store

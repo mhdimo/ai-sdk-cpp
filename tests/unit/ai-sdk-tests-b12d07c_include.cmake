@@ -1,0 +1,5 @@
+if(EXISTS "/Users/mihaldmo/ai/ai-sdk-cpp/tests/unit/ai-sdk-tests-b12d07c_tests.cmake")
+  include("/Users/mihaldmo/ai/ai-sdk-cpp/tests/unit/ai-sdk-tests-b12d07c_tests.cmake")
+else()
+  add_test(ai-sdk-tests_NOT_BUILT-b12d07c ai-sdk-tests_NOT_BUILT-b12d07c)
+endif()
