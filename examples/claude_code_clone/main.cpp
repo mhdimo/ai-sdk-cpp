@@ -29,10 +29,11 @@ int main() {
     boost::asio::io_context ioc;
 
     auto anthropic = ai::providers::anthropic::create_anthropic({
+        .base_url = "https://api.z.ai/api/anthropic",
         .io_context = ioc,
     });
 
-    auto model = anthropic->language_model("claude-sonnet-4-20250514");
+    auto model = anthropic->language_model("glm-5.1");
 
     ai::ToolSet tools;
 
@@ -170,8 +171,8 @@ int main() {
 
     std::cout << "╔══════════════════════════════════════════╗\n";
     std::cout << "║  AI Coding Agent (C++ AI SDK)            ║\n";
-    std::cout << "║  Model: claude-sonnet-4-20250514                ║\n";
-    std::cout << "║  CWD: " << cwd.substr(0, 33) << "  ║\n";
+    std::cout << "║  Model: " << model << "         ║\n";
+    std::cout << "║  CWD: " << cwd.substr(0, 33) << "        ║\n";
     std::cout << "╚══════════════════════════════════════════╝\n\n";
     std::cout << "Type your request (empty line to send, Ctrl+D to exit):\n\n";
 
