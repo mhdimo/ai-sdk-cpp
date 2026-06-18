@@ -46,40 +46,77 @@ struct HttpClientConfig {
     std::chrono::seconds read_timeout{300};
 };
 
-class HttpClient {
+/// Interface for HTTP clients, so providers can be driven against a fake client
+/// in tests (no real network). The concrete HttpClient implements it; tests
+/// subclass IHttpClient directly.
+class IHttpClient {
+public:
+    virtual ~IHttpClient() = default;
+
+    virtual Task<HttpResponse> get(
+        std::string_view url,
+        Headers headers,
+        CancellationToken cancel = {}
+    ) = 0;
+
+    virtual Task<HttpResponse> post_json(
+        std::string_view url,
+        const boost::json::value& body,
+        Headers headers,
+        CancellationToken cancel = {}
+    ) = 0;
+
+    virtual Task<StreamingResponse> post_streaming(
+        std::string_view url,
+        const boost::json::value& body,
+        Headers headers,
+        CancellationToken cancel = {}
+    ) = 0;
+
+    virtual Task<HttpResponse> post_multipart(
+        std::string_view url,
+        MultipartFormData form,
+        Headers headers,
+        CancellationToken cancel = {}
+    ) = 0;
+
+    virtual boost::asio::io_context& get_io_context() const = 0;
+};
+
+class HttpClient : public IHttpClient {
 public:
     explicit HttpClient(boost::asio::io_context& ioc,
                         HttpClientConfig config = {});
-    ~HttpClient();
+    ~HttpClient() override;
 
     Task<HttpResponse> get(
         std::string_view url,
         Headers headers,
         CancellationToken cancel = {}
-    );
+    ) override;
 
     Task<HttpResponse> post_json(
         std::string_view url,
         const boost::json::value& body,
         Headers headers,
         CancellationToken cancel = {}
-    );
+    ) override;
 
     Task<StreamingResponse> post_streaming(
         std::string_view url,
         const boost::json::value& body,
         Headers headers,
         CancellationToken cancel = {}
-    );
+    ) override;
 
     Task<HttpResponse> post_multipart(
         std::string_view url,
         MultipartFormData form,
         Headers headers,
         CancellationToken cancel = {}
-    );
+    ) override;
 
-    boost::asio::io_context& get_io_context() const;
+    boost::asio::io_context& get_io_context() const override;
 
 private:
     struct Impl;

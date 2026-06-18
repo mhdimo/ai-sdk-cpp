@@ -1,6 +1,7 @@
 #include <ai/providers/openai/openai_model.hpp>
 #include <ai/providers/openai/openai_embedding.hpp>
 #include <ai/providers/openai/openai_responses_model.hpp>
+#include <ai/providers/openai/openai_batch.hpp>
 #include <ai/providers/openai/openai.hpp>
 #include <ai/stream/sse_parser.hpp>
 #include <ai/util/json.hpp>
@@ -24,6 +25,10 @@ OpenAIProvider::OpenAIProvider(OpenAIOptions options)
 
 LanguageModelPtr OpenAIProvider::language_model(std::string_view model_id) {
     return std::make_shared<OpenAIChatLanguageModel>(std::string(model_id), *this);
+}
+
+std::shared_ptr<ai::batch::BatchProcessor> OpenAIProvider::batch_processor(std::string_view model_id) {
+    return std::make_shared<OpenAIBatchProcessor>(*this, std::string(model_id));
 }
 
 LanguageModelPtr OpenAIProvider::responses_model(std::string_view model_id) {

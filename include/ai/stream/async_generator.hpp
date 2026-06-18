@@ -21,7 +21,17 @@ public:
         }
 
         std::suspend_always initial_suspend() noexcept { return {}; }
-        std::suspend_always final_suspend() noexcept { return {}; }
+
+        struct FinalAwaitable {
+            bool await_ready() const noexcept { return false; }
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                // Transfer back to the consumer (if any) so the terminal next()
+                // sees producer.done() and returns nullopt instead of hanging.
+                return h.promise().consumer ? h.promise().consumer : std::noop_coroutine();
+            }
+            void await_resume() noexcept {}
+        };
+        FinalAwaitable final_suspend() noexcept { return {}; }
 
         void unhandled_exception() {
             exception = std::current_exception();
@@ -31,13 +41,15 @@ public:
 
         struct YieldAwaitable {
             bool await_ready() const noexcept { return false; }
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type>) noexcept {
-                return {}; // will be set by next()
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                // After storing the value, transfer control back to the consumer
+                // that is awaiting next(); its await_resume reads current_value.
+                return h.promise().consumer ? h.promise().consumer : std::noop_coroutine();
             }
             void await_resume() noexcept {}
         };
 
-        std::suspend_always yield_value(T value) {
+        YieldAwaitable yield_value(T value) {
             current_value = std::move(value);
             return {};
         }
@@ -56,11 +68,15 @@ public:
         }
 
         std::optional<T> await_resume() {
+            // Surface a producer exception before treating the stream as ended;
+            // otherwise an error raised after the last yield (e.g. final schema
+            // validation) reaches final_suspend, marks the producer done, and is
+            // silently dropped.
+            if (producer && producer.promise().exception) {
+                std::rethrow_exception(producer.promise().exception);
+            }
             if (!producer || producer.done()) {
                 return std::nullopt;
-            }
-            if (producer.promise().exception) {
-                std::rethrow_exception(producer.promise().exception);
             }
             auto val = std::move(producer.promise().current_value);
             producer.promise().current_value.reset();
@@ -281,6 +297,19 @@ public:
     void start() {
         if (handle_ && !handle_.done()) {
             handle_.resume();
+        }
+    }
+
+    bool done() const {
+        return !handle_ || handle_.done();
+    }
+
+    void get() {
+        if (!handle_.done()) {
+            handle_.resume();
+        }
+        if (handle_.promise().exception) {
+            std::rethrow_exception(handle_.promise().exception);
         }
     }
 

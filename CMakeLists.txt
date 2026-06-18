@@ -58,6 +58,7 @@ set(AI_SDK_CORE_SOURCES
     src/core/stream_text.cpp
     src/core/generate_object.cpp
     src/core/embed.cpp
+    src/core/batch.cpp
     src/agent/tool_loop_agent.cpp
     src/tool/tool_set.cpp
     src/model/middleware.cpp

@@ -167,7 +167,6 @@ These implement `LanguageModel` directly with custom prompt conversion and respo
 | OpenAI | `#include <ai/providers/openai/openai.hpp>` |
 | Google | `#include <ai/providers/google/google.hpp>` |
 | Amazon Bedrock | `#include <ai/providers/bedrock/bedrock.hpp>` |
-| Cohere | `#include <ai/providers/cohere/cohere.hpp>` |
 
 ### OpenAI-Compatible Providers
 
@@ -183,6 +182,7 @@ Thin wrappers that delegate to the OpenAI provider with a different base URL and
 | Together AI | `#include <ai/providers/togetherai/togetherai.hpp>` |
 | Perplexity | `#include <ai/providers/perplexity/perplexity.hpp>` |
 | MoonshotAI | `#include <ai/providers/moonshotai/moonshotai.hpp>` |
+| Cohere | `#include <ai/providers/cohere/cohere.hpp>` (chat delegates to OpenAI; also exposes a native `rerank()` endpoint) |
 
 ## Configuration
 

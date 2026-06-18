@@ -12,28 +12,37 @@ int main() {
 
     auto model = anthropic->language_model("claude-sonnet-4-20250514");
 
-    auto task = ai::stream_text({
+    // stream_text returns a Task whose result holds the stream we then drain.
+    auto outer = ai::stream_text({
         .model = model,
         .prompt = "Write a haiku about C++ templates.",
         .max_output_tokens = 128,
     });
 
-    task.start();
-    while (!task.done()) {
+    outer.start();
+    while (!outer.done()) {
         ioc.run_one();
     }
 
     try {
-        auto result = task.get();
-        auto& stream = result.stream;
+        auto result = outer.get();
 
-        // Consume the stream
-        while (true) {
-            auto next = stream.next();
-            // In a real async context, we'd co_await this
-            // For this example, drive the coroutine manually
-            break; // placeholder - real usage requires async context
+        // The stream is an AsyncGenerator: generator.next() must be awaited from
+        // inside a coroutine. Drain it in a second Task driven on the same
+        // io_context, printing each text delta as it arrives.
+        auto consume = [](ai::AsyncGenerator<ai::StreamPart> stream) -> ai::Task<void> {
+            while (auto part = co_await stream.next()) {
+                if (auto* delta = std::get_if<ai::TextDelta>(&*part)) {
+                    std::cout << delta->delta << std::flush;
+                }
+            }
+        }(std::move(result.stream));
+
+        consume.start();
+        while (!consume.done()) {
+            ioc.run_one();
         }
+        consume.get(); // rethrows any stream error
 
         std::cout << "\n[Stream complete]\n";
     } catch (const std::exception& e) {

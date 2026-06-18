@@ -23,6 +23,7 @@ public:
     explicit OpenAIProvider(OpenAIOptions options);
 
     LanguageModelPtr language_model(std::string_view model_id) override;
+    std::shared_ptr<ai::batch::BatchProcessor> batch_processor(std::string_view model_id) override;
     LanguageModelPtr responses_model(std::string_view model_id);
     EmbeddingModelPtr embedding_model(std::string_view model_id);
     FileStoragePtr file_storage();

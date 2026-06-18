@@ -19,11 +19,13 @@ public:
     Task<GenerateResult> do_generate(CallOptions options) override;
     Task<StreamResult> do_stream(CallOptions options) override;
 
+    // Pure transformation of CallOptions into the Anthropic Messages API body.
+    // Public to allow unit-testing structured-output / request construction.
+    boost::json::value build_request_body(const CallOptions& options, bool stream);
+
 private:
     std::string model_id_;
     AnthropicProvider& provider_;
-
-    boost::json::value build_request_body(const CallOptions& options, bool stream);
     boost::json::array convert_messages(const Prompt& prompt);
     boost::json::array convert_tools(const std::vector<FunctionTool>& tools);
     boost::json::value convert_tool_choice(const std::optional<ToolChoice>& choice);

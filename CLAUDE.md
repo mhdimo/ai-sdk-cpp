@@ -55,18 +55,19 @@ bindings/node/      → N-API addon over C API
 
 ### Provider Pattern
 
-**Full providers** (Anthropic, OpenAI, Google, Bedrock) implement `LanguageModel` directly with custom prompt conversion and response parsing:
+**Full providers** (Anthropic, OpenAI, Google, Bedrock) implement `LanguageModel` directly with custom prompt conversion and response parsing. The conversion and parsing logic lives **inline in the provider's `*_model.cpp`** (`build_request_body()` builds the request body, `parse_response()` parses the reply); `convert_prompt.cpp` and `parse_response.cpp` are currently empty placeholders reserved for future extraction.
 ```
 providers/anthropic/
 ├── include/ai/providers/anthropic/
 │   ├── anthropic.hpp          ← create_anthropic() factory
 │   └── anthropic_model.hpp    ← LanguageModel implementation
 └── src/
-    ├── convert_prompt.cpp     ← Universal messages → provider format
-    └── parse_response.cpp     ← Provider JSON → GenerateResult
+    ├── anthropic_model.cpp    ← build_request_body() + parse_response() (the real logic)
+    ├── convert_prompt.cpp     ← placeholder (reserved for future extraction)
+    └── parse_response.cpp     ← placeholder (reserved for future extraction)
 ```
 
-**OpenAI-compatible providers** (DeepSeek, Groq, xAI, Mistral, Fireworks, TogetherAI, Perplexity) are thin wrappers that delegate to the OpenAI provider with a different base URL:
+**OpenAI-compatible providers** (DeepSeek, Groq, xAI, Mistral, Fireworks, TogetherAI, Perplexity, Cohere, MoonshotAI) are thin wrappers that delegate to the OpenAI provider with a different base URL:
 ```
 providers/deepseek/
 ├── include/ai/providers/deepseek/deepseek.hpp

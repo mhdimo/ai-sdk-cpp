@@ -161,6 +161,49 @@ ai_status_t ai_agent_call(ai_agent_t agent, const char* prompt, ai_generate_resu
 ai_status_t ai_agent_call_stream(ai_agent_t agent, const char* prompt, ai_stream_callback_fn callback, void* user_data);
 
 /* --------------------------------------------------------------------------
+ * Batch — submit many requests, poll to completion, fetch results.
+ * Only providers that support batching (e.g. Anthropic, OpenAI) can create a
+ * batch handle; ai_batch_create returns NULL for unsupported providers.
+ * ai_batch_run blocks until the batch reaches a terminal state.
+ * -------------------------------------------------------------------------- */
+
+typedef struct ai_batch* ai_batch_t;
+
+typedef struct {
+    const char* custom_id;     /* user-defined id to match the response */
+    const char* prompt;        /* simple string prompt; NULL for none */
+    const char* system;        /* optional system message; NULL for none */
+    int max_output_tokens;     /* 0 = model default */
+    double temperature;        /* -1 = model default */
+} ai_batch_request_t;
+
+typedef struct {
+    const char* custom_id;
+    const char* result_json;   /* generated text/JSON on success, NULL if error */
+    const char* error;         /* error message, NULL on success */
+} ai_batch_item_t;
+
+typedef struct {
+    const char* batch_id;
+    ai_batch_item_t* items;    /* array of `count` items */
+    int count;
+    const char* status;        /* "completed", "failed", "cancelled", "expired", "other" */
+    void* _storage;            /* internal; freed by ai_batch_result_free */
+} ai_batch_result_t;
+
+ai_batch_t ai_batch_create(ai_provider_t provider, const char* model_id);
+void ai_batch_destroy(ai_batch_t batch);
+
+ai_status_t ai_batch_run(
+    ai_batch_t batch,
+    const ai_batch_request_t* requests,
+    int count,
+    int poll_interval_ms,
+    ai_batch_result_t* result
+);
+void ai_batch_result_free(ai_batch_result_t* result);
+
+/* --------------------------------------------------------------------------
  * Utility
  * -------------------------------------------------------------------------- */
 
