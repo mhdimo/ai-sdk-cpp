@@ -45,14 +45,14 @@ TEST_CASE("OpenAI do_generate parses a chat completion response", "[provider]") 
                       R"("choices":[{"index":0,"message":{"role":"assistant","content":"hello world"},)"
                       R"("finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}})";
 
-    ai::providers::openai::OpenAIProvider provider(
+    auto provider = std::make_shared<ai::providers::openai::OpenAIProvider>(
         ai::providers::openai::OpenAIOptions{
             .api_key = std::string("test-key"),
             .base_url = "https://example.test",
             .io_context = ioc,
             .http_client = fake,
         });
-    auto model = provider.language_model("gpt-test");
+    auto model = provider->language_model("gpt-test");
 
     auto result = run(model->do_generate(simple_prompt("hi")), ioc);
 
@@ -69,14 +69,14 @@ TEST_CASE("Google do_generate parses a generateContent response", "[provider]") 
                       R"("parts":[{"text":"hi from gemini"}]},"finishReason":"STOP"}],)"
                       R"("usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":3}})";
 
-    ai::providers::google::GoogleProvider provider(
+    auto provider = std::make_shared<ai::providers::google::GoogleProvider>(
         ai::providers::google::GoogleOptions{
             .api_key = std::string("test-key"),
             .base_url = "https://example.test",
             .io_context = ioc,
             .http_client = fake,
         });
-    auto model = provider.language_model("gemini-test");
+    auto model = provider->language_model("gemini-test");
 
     auto result = run(model->do_generate(simple_prompt("hi")), ioc);
 
