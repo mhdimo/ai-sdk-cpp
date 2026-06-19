@@ -26,7 +26,7 @@ OpenAIProvider::OpenAIProvider(OpenAIOptions options)
 }
 
 LanguageModelPtr OpenAIProvider::language_model(std::string_view model_id) {
-    return std::make_shared<OpenAIChatLanguageModel>(std::string(model_id), *this);
+    return std::make_shared<OpenAIChatLanguageModel>(std::string(model_id), shared_from_this());
 }
 
 std::shared_ptr<ai::batch::BatchProcessor> OpenAIProvider::batch_processor(std::string_view model_id) {
@@ -86,10 +86,10 @@ bool is_reasoning_model(std::string_view model_id) {
 } // namespace
 
 OpenAIChatLanguageModel::OpenAIChatLanguageModel(
-    std::string model_id, OpenAIProvider& provider
+    std::string model_id, std::shared_ptr<OpenAIProvider> provider
 )
     : model_id_(std::move(model_id))
-    , provider_(provider) {}
+    , provider_(std::move(provider)) {}
 
 boost::json::value OpenAIChatLanguageModel::build_request_body(
     const CallOptions& options, bool stream
@@ -373,10 +373,10 @@ GenerateResult OpenAIChatLanguageModel::parse_response(const boost::json::value&
 
 Task<GenerateResult> OpenAIChatLanguageModel::do_generate(CallOptions options) {
     auto body = build_request_body(options, false);
-    auto headers = provider_.auth_headers();
-    auto url = provider_.chat_completions_url();
+    auto headers = provider_->auth_headers();
+    auto url = provider_->chat_completions_url();
 
-    auto response = co_await provider_.http_client().post_json(
+    auto response = co_await provider_->http_client().post_json(
         url, body, std::move(headers), options.cancel
     );
 
@@ -386,10 +386,10 @@ Task<GenerateResult> OpenAIChatLanguageModel::do_generate(CallOptions options) {
 
 Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
     auto body = build_request_body(options, true);
-    auto headers = provider_.auth_headers();
-    auto url = provider_.chat_completions_url();
+    auto headers = provider_->auth_headers();
+    auto url = provider_->chat_completions_url();
 
-    auto response = co_await provider_.http_client().post_streaming(
+    auto response = co_await provider_->http_client().post_streaming(
         url, body, std::move(headers), options.cancel
     );
 

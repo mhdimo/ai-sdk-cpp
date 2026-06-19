@@ -9,6 +9,7 @@
 #include <optional>
 #include <functional>
 #include <vector>
+#include <memory>
 
 namespace ai::providers::anthropic {
 
@@ -30,7 +31,7 @@ struct AnthropicOptions {
     std::shared_ptr<http::IHttpClient> http_client;
 };
 
-class AnthropicProvider : public Provider {
+class AnthropicProvider : public Provider, public std::enable_shared_from_this<AnthropicProvider> {
 public:
     explicit AnthropicProvider(AnthropicOptions options);
 

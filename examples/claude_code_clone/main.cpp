@@ -4,7 +4,7 @@
 // and optional persistent memory — so a real coding agent is ~30 lines.
 
 #include <ai/ai.hpp>
-#include <ai/providers/anthropic/anthropic.hpp>
+#include <ai/providers/deepseek/deepseek.hpp>
 
 #include <boost/asio.hpp>
 
@@ -18,8 +18,8 @@ namespace fs = std::filesystem;
 int main() {
     boost::asio::io_context ioc;
 
-    auto anthropic = ai::providers::anthropic::create_anthropic({.io_context = ioc});
-    auto model = anthropic->language_model("claude-sonnet-4-5");
+    auto deepseek = ai::providers::deepseek::create_deepseek({.io_context = ioc});
+    auto model = deepseek->language_model("deepseek-v4-flash");
 
     ai::CodingAgentOptions opts;
     opts.model = model;

@@ -25,7 +25,7 @@ AnthropicProvider::AnthropicProvider(AnthropicOptions options)
 }
 
 LanguageModelPtr AnthropicProvider::language_model(std::string_view model_id) {
-    return std::make_shared<AnthropicLanguageModel>(std::string(model_id), *this);
+    return std::make_shared<AnthropicLanguageModel>(std::string(model_id), shared_from_this());
 }
 
 std::shared_ptr<ai::batch::BatchProcessor> AnthropicProvider::batch_processor(std::string_view model_id) {

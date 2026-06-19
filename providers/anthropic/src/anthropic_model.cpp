@@ -8,10 +8,10 @@
 namespace ai::providers::anthropic {
 
 AnthropicLanguageModel::AnthropicLanguageModel(
-    std::string model_id, AnthropicProvider& provider
+    std::string model_id, std::shared_ptr<AnthropicProvider> provider
 )
     : model_id_(std::move(model_id))
-    , provider_(provider) {}
+    , provider_(std::move(provider)) {}
 
 int AnthropicLanguageModel::default_max_tokens() const {
     if (model_id_.find("opus") != std::string::npos) return 32000;
@@ -426,10 +426,10 @@ Task<GenerateResult> AnthropicLanguageModel::do_generate(CallOptions options) {
         && options.response_format->schema;
 
     auto body = build_request_body(options, false);
-    auto headers = provider_.auth_headers();
-    auto url = provider_.messages_url();
+    auto headers = provider_->auth_headers();
+    auto url = provider_->messages_url();
 
-    auto response = co_await provider_.http_client().post_json(
+    auto response = co_await provider_->http_client().post_json(
         url, body, std::move(headers), options.cancel
     );
 
@@ -462,10 +462,10 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
         && options.response_format->schema;
 
     auto body = build_request_body(options, true);
-    auto headers = provider_.auth_headers();
-    auto url = provider_.messages_url();
+    auto headers = provider_->auth_headers();
+    auto url = provider_->messages_url();
 
-    auto response = co_await provider_.http_client().post_streaming(
+    auto response = co_await provider_->http_client().post_streaming(
         url, body, std::move(headers), options.cancel
     );
 

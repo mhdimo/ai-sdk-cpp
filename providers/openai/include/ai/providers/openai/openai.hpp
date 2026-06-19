@@ -7,6 +7,7 @@
 #include <boost/asio.hpp>
 #include <string>
 #include <optional>
+#include <memory>
 
 namespace ai::providers::openai {
 
@@ -20,7 +21,7 @@ struct OpenAIOptions {
     std::shared_ptr<http::IHttpClient> http_client;
 };
 
-class OpenAIProvider : public Provider {
+class OpenAIProvider : public Provider, public std::enable_shared_from_this<OpenAIProvider> {
 public:
     explicit OpenAIProvider(OpenAIOptions options);
 

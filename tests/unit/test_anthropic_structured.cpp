@@ -25,16 +25,17 @@ namespace anthropic = ai::providers::anthropic;
 // valid. Not moved, so all addresses are stable.
 struct AnthropicEnv {
     boost::asio::io_context ioc;
-    anthropic::AnthropicProvider provider;
+    std::shared_ptr<anthropic::AnthropicProvider> provider;
     anthropic::AnthropicLanguageModel model;
 
     AnthropicEnv()
         : ioc()
-        , provider(anthropic::AnthropicOptions{
-              .api_key = std::string("test-key"),
-              .base_url = "https://example.test",
-              .io_context = ioc,
-          })
+        , provider(std::make_shared<anthropic::AnthropicProvider>(
+              anthropic::AnthropicOptions{
+                  .api_key = std::string("test-key"),
+                  .base_url = "https://example.test",
+                  .io_context = ioc,
+              }))
         , model("claude-sonnet-4-5", provider) {}
 };
 
@@ -98,7 +99,7 @@ TEST_CASE("Anthropic provider exposes a batch processor (C binding dispatch)", "
     AnthropicEnv env;
     // The polymorphic seam the C ai_batch_create relies on: returns non-null for
     // a provider that supports batching (no network needed to construct it).
-    auto proc = env.provider.batch_processor("claude-sonnet-4-5");
+    auto proc = env.provider->batch_processor("claude-sonnet-4-5");
     REQUIRE(proc != nullptr);
 }
 
@@ -195,7 +196,7 @@ TEST_CASE("Anthropic do_generate surfaces structured tool input as text", "[anth
         .io_context = ioc,
         .http_client = fake,
     };
-    anthropic::AnthropicProvider provider(std::move(opts));
+    auto provider = std::make_shared<anthropic::AnthropicProvider>(std::move(opts));
     anthropic::AnthropicLanguageModel model("claude-sonnet-4-5", provider);
 
     auto result = drive(model.do_generate(structured_call_options()), ioc);
@@ -238,7 +239,7 @@ data: {"type":"message_stop"}
         .io_context = ioc,
         .http_client = fake,
     };
-    anthropic::AnthropicProvider provider(std::move(opts));
+    auto provider = std::make_shared<anthropic::AnthropicProvider>(std::move(opts));
     anthropic::AnthropicLanguageModel model("claude-sonnet-4-5", provider);
 
     auto stream_result = drive(model.do_stream(structured_call_options()), ioc);

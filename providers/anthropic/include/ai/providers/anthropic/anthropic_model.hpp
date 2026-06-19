@@ -11,7 +11,7 @@ class AnthropicProvider;
 
 class AnthropicLanguageModel : public LanguageModel {
 public:
-    AnthropicLanguageModel(std::string model_id, AnthropicProvider& provider);
+    AnthropicLanguageModel(std::string model_id, std::shared_ptr<AnthropicProvider> provider);
 
     std::string_view provider() const override { return "anthropic"; }
     std::string_view model_id() const override { return model_id_; }
@@ -25,7 +25,7 @@ public:
 
 private:
     std::string model_id_;
-    AnthropicProvider& provider_;
+    std::shared_ptr<AnthropicProvider> provider_;
     boost::json::array convert_messages(const Prompt& prompt);
     boost::json::array convert_tools(const std::vector<FunctionTool>& tools);
     boost::json::value convert_tool_choice(const std::optional<ToolChoice>& choice);
