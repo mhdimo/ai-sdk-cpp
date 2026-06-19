@@ -13,9 +13,11 @@
 #include <ai/providers/cohere/cohere.hpp>
 #include <boost/asio.hpp>
 #include <boost/json.hpp>
+#include <chrono>
 #include <string>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 #include <mutex>
 #include <cstring>
 
@@ -50,6 +52,22 @@ struct ai_agent {
     ai_context* ctx;
 };
 
+struct ai_batch {
+    ai::batch::BatchProcessorPtr ptr;
+    ai_context* ctx;
+};
+
+// Backing storage for ai_batch_result_t: owns all strings the result points
+// into, plus the items array. Freed by ai_batch_result_free.
+struct BatchResultStorage {
+    std::string batch_id;
+    std::string status;
+    std::vector<std::string> custom_ids;
+    std::vector<std::string> result_jsons;
+    std::vector<std::string> errors;
+    std::vector<ai_batch_item_t> items;
+};
+
 static thread_local std::string g_result_text;
 static thread_local std::string g_result_reason;
 
@@ -62,6 +80,72 @@ static ai_status_t map_exception(ai_context* ctx, const std::exception& e) {
     if (dynamic_cast<const ai::error::InvalidResponseError*>(&e)) return AI_ERROR_INVALID_RESPONSE;
     if (dynamic_cast<const ai::error::ApiCallError*>(&e)) return AI_ERROR_API_CALL;
     return AI_ERROR_INTERNAL;
+}
+
+// Drives an AsyncGenerator<StreamPart> to completion on `ioc`, dispatching each
+// part to the C callback. Returns AI_OK, or a mapped error status after emitting
+// a terminal AI_STREAM_ERROR event. Shared by ai_stream_text and
+// ai_agent_call_stream (generator.next() must be awaited from a coroutine).
+static ai_status_t consume_stream_to_callback(
+    ai::AsyncGenerator<ai::StreamPart> stream,
+    boost::asio::io_context& ioc,
+    ai_stream_callback_fn cb,
+    void* ud,
+    ai_context* ctx
+) {
+    auto consume = [](ai::AsyncGenerator<ai::StreamPart> s,
+                      ai_stream_callback_fn callback,
+                      void* user_data) -> ai::Task<void> {
+        while (auto part = co_await s.next()) {
+            ai_stream_event_t event{};
+            std::visit([&](auto&& p) {
+                using T = std::decay_t<decltype(p)>;
+                if constexpr (std::is_same_v<T, ai::TextDelta>) {
+                    event.type = AI_STREAM_TEXT_DELTA;
+                    event.text = p.delta.c_str();
+                } else if constexpr (std::is_same_v<T, ai::ToolInputStart>) {
+                    event.type = AI_STREAM_TOOL_CALL_START;
+                    event.tool_name = p.tool_name.c_str();
+                    event.tool_call_id = p.id.c_str();
+                } else if constexpr (std::is_same_v<T, ai::ToolInputDelta>) {
+                    event.type = AI_STREAM_TOOL_CALL_DELTA;
+                    event.text = p.delta.c_str();
+                    event.tool_call_id = p.id.c_str();
+                } else if constexpr (std::is_same_v<T, ai::ToolInputEnd>) {
+                    event.type = AI_STREAM_TOOL_CALL_END;
+                    event.tool_call_id = p.id.c_str();
+                } else if constexpr (std::is_same_v<T, ai::FinishPart>) {
+                    event.type = AI_STREAM_FINISH;
+                    switch (p.reason) {
+                    case ai::FinishReason::Stop: event.finish_reason = "stop"; break;
+                    case ai::FinishReason::Length: event.finish_reason = "length"; break;
+                    case ai::FinishReason::ToolCalls: event.finish_reason = "tool_calls"; break;
+                    default: event.finish_reason = "other"; break;
+                    }
+                } else if constexpr (std::is_same_v<T, ai::ErrorPart>) {
+                    // Surface as a hard error so the call returns a non-OK status;
+                    // the catch below emits the single AI_STREAM_ERROR event.
+                    throw ai::error::StreamError(p.message);
+                }
+            }, *part);
+            callback(event, user_data);
+        }
+    }(std::move(stream), cb, ud);
+
+    try {
+        consume.start();
+        while (!consume.done()) {
+            ioc.run_one();
+        }
+        consume.get();
+        return AI_OK;
+    } catch (const std::exception& e) {
+        ai_stream_event_t err_event{};
+        err_event.type = AI_STREAM_ERROR;
+        err_event.text = e.what();
+        cb(err_event, ud);
+        return map_exception(ctx, e);
+    }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -338,53 +422,8 @@ ai_status_t ai_stream_text(ai_generate_options_t opts, ai_stream_callback_fn cal
             ctx->ioc.run_one();
         }
         auto stream_result = task.get();
-
-        auto& stream = stream_result.stream;
-        while (true) {
-            auto next = stream.next();
-            // For synchronous iteration of the generator
-            if (stream.done()) break;
-
-            // Resume the generator
-            auto part_opt = [&]() -> std::optional<ai::StreamPart> {
-                // Simple synchronous pull from coroutine
-                auto awaitable = stream.next();
-                if (stream.done()) return std::nullopt;
-                // This is a simplification — in practice the generator
-                // needs proper async driving
-                return std::nullopt;
-            }();
-
-            if (!part_opt) break;
-
-            auto& part = *part_opt;
-            ai_stream_event_t event{};
-
-            std::visit([&](auto&& p) {
-                using T = std::decay_t<decltype(p)>;
-                if constexpr (std::is_same_v<T, ai::TextDelta>) {
-                    event.type = AI_STREAM_TEXT_DELTA;
-                    event.text = p.delta.c_str();
-                } else if constexpr (std::is_same_v<T, ai::ToolInputStart>) {
-                    event.type = AI_STREAM_TOOL_CALL_START;
-                    event.tool_name = p.tool_name.c_str();
-                    event.tool_call_id = p.id.c_str();
-                } else if constexpr (std::is_same_v<T, ai::ToolInputDelta>) {
-                    event.type = AI_STREAM_TOOL_CALL_DELTA;
-                    event.text = p.delta.c_str();
-                    event.tool_call_id = p.id.c_str();
-                } else if constexpr (std::is_same_v<T, ai::ToolInputEnd>) {
-                    event.type = AI_STREAM_TOOL_CALL_END;
-                    event.tool_call_id = p.id.c_str();
-                } else if constexpr (std::is_same_v<T, ai::FinishPart>) {
-                    event.type = AI_STREAM_FINISH;
-                }
-            }, part);
-
-            callback(event, user_data);
-        }
-
-        return AI_OK;
+        return consume_stream_to_callback(
+            std::move(stream_result.stream), ctx->ioc, callback, user_data, ctx);
     } catch (const std::exception& e) {
         ai_stream_event_t err_event{};
         err_event.type = AI_STREAM_ERROR;
@@ -459,10 +498,151 @@ ai_status_t ai_agent_call(ai_agent_t agent, const char* prompt, ai_generate_resu
 }
 
 ai_status_t ai_agent_call_stream(ai_agent_t agent, const char* prompt, ai_stream_callback_fn callback, void* user_data) {
-    (void)callback; (void)user_data;
-    // For streaming agent, reuse the on_event from agent creation
-    ai_generate_result_t result{};
-    return ai_agent_call(agent, prompt, &result);
+    if (!agent || !prompt || !callback) return AI_ERROR_INVALID_ARGUMENT;
+    auto* ctx = agent->ctx;
+
+    try {
+        // Run the agent's streaming tool loop, then dispatch each stream part
+        // (text/tool/finish) to the C callback as it is produced.
+        auto outer = agent->agent.stream(std::string(prompt));
+        outer.start();
+        while (!outer.done()) {
+            ctx->ioc.run_one();
+        }
+        auto result = outer.get();
+
+        return consume_stream_to_callback(
+            std::move(result.stream), ctx->ioc, callback, user_data, ctx);
+    } catch (const std::exception& e) {
+        ai_stream_event_t err_event{};
+        err_event.type = AI_STREAM_ERROR;
+        err_event.text = e.what();
+        callback(err_event, user_data);
+        return map_exception(ctx, e);
+    }
+}
+
+ai_batch_t ai_batch_create(ai_provider_t provider, const char* model_id) {
+    if (!provider || !model_id) return nullptr;
+    auto proc = provider->ptr->batch_processor(model_id);
+    if (!proc) {
+        provider->ctx->last_error =
+            "Provider does not support batching: " + std::string(provider->ptr->provider_id());
+        return nullptr;
+    }
+    return new ai_batch{.ptr = std::move(proc), .ctx = provider->ctx};
+}
+
+void ai_batch_destroy(ai_batch_t batch) {
+    delete batch;
+}
+
+ai_status_t ai_batch_run(
+    ai_batch_t batch,
+    const ai_batch_request_t* requests,
+    int count,
+    int poll_interval_ms,
+    ai_batch_result_t* result
+) {
+    if (!batch || !result) return AI_ERROR_INVALID_ARGUMENT;
+    if (count < 0) return AI_ERROR_INVALID_ARGUMENT;
+    if (count > 0 && !requests) return AI_ERROR_INVALID_ARGUMENT;
+    auto* ctx = batch->ctx;
+
+    try {
+        std::vector<ai::batch::BatchRequest> reqs;
+        reqs.reserve(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            const auto& r = requests[i];
+            ai::Prompt prompt;
+            if (r.system) {
+                prompt.push_back(ai::SystemMessage{.content = std::string(r.system)});
+            }
+            if (r.prompt) {
+                ai::UserContent uc;
+                uc.push_back(ai::TextPart{.text = std::string(r.prompt)});
+                prompt.push_back(ai::UserMessage{.content = std::move(uc)});
+            }
+            ai::CallOptions co;
+            co.prompt = std::move(prompt);
+            if (r.max_output_tokens > 0) co.max_output_tokens = r.max_output_tokens;
+            if (r.temperature >= 0) co.temperature = r.temperature;
+            reqs.push_back(ai::batch::BatchRequest{
+                .custom_id = std::string(r.custom_id ? r.custom_id : ""),
+                .options = std::move(co),
+            });
+        }
+
+        ai::batch::BatchRunOptions opts{
+            .processor = batch->ptr,
+            .requests = std::move(reqs),
+            .io_context = ctx->ioc,
+            .poll_interval = std::chrono::milliseconds(poll_interval_ms > 0 ? poll_interval_ms : 5000),
+        };
+
+        auto task = ai::batch::run_batch(std::move(opts));
+        task.start();
+        while (!task.done()) {
+            ctx->ioc.run_one();
+        }
+        auto run_result = task.get();
+
+        auto* storage = new BatchResultStorage();
+        storage->batch_id = std::move(run_result.batch_id);
+        switch (run_result.final_status.status) {
+        case ai::batch::BatchStatus::Completed: storage->status = "completed"; break;
+        case ai::batch::BatchStatus::Failed: storage->status = "failed"; break;
+        case ai::batch::BatchStatus::Cancelled: storage->status = "cancelled"; break;
+        case ai::batch::BatchStatus::Expired: storage->status = "expired"; break;
+        default: storage->status = "other"; break;
+        }
+
+        auto n = run_result.results.size();
+        storage->custom_ids.reserve(n);
+        storage->result_jsons.reserve(n);
+        storage->errors.reserve(n);
+        storage->items.reserve(n);
+        for (auto& item : run_result.results) {
+            storage->custom_ids.push_back(item.custom_id);
+            if (item.error) {
+                storage->result_jsons.emplace_back();
+                storage->errors.push_back(*item.error);
+            } else {
+                std::string text = item.result ? item.result->text() : std::string{};
+                storage->result_jsons.push_back(std::move(text));
+                storage->errors.emplace_back();
+            }
+            // Pointers are stable: the three string vectors are reserved above.
+            storage->items.push_back(ai_batch_item_t{
+                .custom_id = storage->custom_ids.back().c_str(),
+                .result_json = storage->result_jsons.back().empty()
+                    ? nullptr : storage->result_jsons.back().c_str(),
+                .error = storage->errors.back().empty()
+                    ? nullptr : storage->errors.back().c_str(),
+            });
+        }
+
+        result->batch_id = storage->batch_id.c_str();
+        result->items = storage->items.data();
+        result->count = static_cast<int>(storage->items.size());
+        result->status = storage->status.c_str();
+        result->_storage = storage;
+
+        return AI_OK;
+    } catch (const std::exception& e) {
+        return map_exception(ctx, e);
+    }
+}
+
+void ai_batch_result_free(ai_batch_result_t* result) {
+    if (result && result->_storage) {
+        delete static_cast<BatchResultStorage*>(result->_storage);
+        result->_storage = nullptr;
+        result->items = nullptr;
+        result->batch_id = nullptr;
+        result->status = nullptr;
+        result->count = 0;
+    }
 }
 
 const char* ai_sdk_version(void) {

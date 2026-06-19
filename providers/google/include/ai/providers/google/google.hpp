@@ -12,6 +12,8 @@ struct GoogleOptions {
     std::optional<std::string> api_key;
     std::string base_url = "https://generativelanguage.googleapis.com/v1beta";
     boost::asio::io_context& io_context;
+    // Optional injected client (tests); null = construct a real HttpClient.
+    std::shared_ptr<http::IHttpClient> http_client;
 };
 
 class GoogleProvider : public Provider {
@@ -22,7 +24,7 @@ public:
     std::string_view provider_id() const override { return "google"; }
 
     const GoogleOptions& options() const { return options_; }
-    http::HttpClient& http_client() { return http_client_; }
+    http::IHttpClient& http_client() { return *http_client_; }
 
     // Build generate URL: /models/{model}:generateContent?key={apiKey}
     std::string generate_url(std::string_view model_id) const;
@@ -33,7 +35,7 @@ public:
 
 private:
     GoogleOptions options_;
-    http::HttpClient http_client_;
+    std::shared_ptr<http::IHttpClient> http_client_;
     std::string resolved_api_key_;
 };
 

@@ -1,16 +1,16 @@
 #include <ai/ai.hpp>
-#include <ai/providers/anthropic/anthropic.hpp>
+#include <ai/providers/deepseek/deepseek.hpp>
 #include <boost/asio.hpp>
 #include <iostream>
 
 int main() {
     boost::asio::io_context ioc;
 
-    auto anthropic = ai::providers::anthropic::create_anthropic({
+    auto deepseek = ai::providers::deepseek::create_deepseek({
         .io_context = ioc,
     });
 
-    auto model = anthropic->language_model("claude-sonnet-4-20250514");
+    auto model = deepseek->language_model("deepseek-v4-flash");
 
     auto task = ai::generate_text({
         .model = model,

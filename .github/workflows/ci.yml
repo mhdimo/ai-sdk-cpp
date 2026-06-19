@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libssl-dev cmake ninja-build
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install boost openssl cmake ninja
+          echo "OpenSSL_DIR=$(brew --prefix openssl)/lib/cmake/OpenSSL" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+  # A second Linux job exercising Clang + libc++ (the configuration the repo
+  # targets for Apple Clang / clang).
+  build-test-clang:
+    name: Build & test (Linux / Clang)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libssl-dev cmake ninja-build clang libc++-dev libc++abi-dev
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-stdlib=libc++"
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure

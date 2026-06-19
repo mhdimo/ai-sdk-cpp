@@ -8,10 +8,10 @@
 namespace ai::providers::anthropic {
 
 AnthropicLanguageModel::AnthropicLanguageModel(
-    std::string model_id, AnthropicProvider& provider
+    std::string model_id, std::shared_ptr<AnthropicProvider> provider
 )
     : model_id_(std::move(model_id))
-    , provider_(provider) {}
+    , provider_(std::move(provider)) {}
 
 int AnthropicLanguageModel::default_max_tokens() const {
     if (model_id_.find("opus") != std::string::npos) return 32000;
@@ -304,11 +304,26 @@ boost::json::value AnthropicLanguageModel::build_request_body(
         }
     }
 
-    // Response format for structured output
-    if (options.response_format && options.response_format->type == "json") {
-        if (options.response_format->schema) {
-            // Use Anthropic's native structured output if available
-        }
+    // Structured output. Anthropic's Messages API has no top-level
+    // response_format, so schema-conformant JSON is produced via the tool-use
+    // pattern: a single tool whose input_schema is the requested schema, forced
+    // via tool_choice. do_generate/do_stream then surface the tool input as text
+    // so the provider-agnostic generate_object/stream_object path works.
+    if (options.response_format && options.response_format->type == "json"
+        && options.response_format->schema) {
+        const std::string tool_name = options.response_format->name.value_or("json");
+
+        boost::json::object tool_obj;
+        tool_obj["name"] = tool_name;
+        tool_obj["input_schema"] = options.response_format->schema->raw();
+        tool_obj["description"] = options.response_format->description
+            ? *options.response_format->description
+            : std::string("Respond with a JSON object matching this schema.");
+        tools.push_back(std::move(tool_obj));
+        has_tools = true;
+
+        body["tools"] = std::move(tools);
+        body["tool_choice"] = boost::json::object{{"type", "tool"}, {"name", tool_name}};
     }
 
     return body;
@@ -406,31 +421,66 @@ GenerateResult AnthropicLanguageModel::parse_response(const boost::json::value& 
 }
 
 Task<GenerateResult> AnthropicLanguageModel::do_generate(CallOptions options) {
-    auto body = build_request_body(options, false);
-    auto headers = provider_.auth_headers();
-    auto url = provider_.messages_url();
+    const bool structured = options.response_format
+        && options.response_format->type == "json"
+        && options.response_format->schema;
 
-    auto response = co_await provider_.http_client().post_json(
+    auto body = build_request_body(options, false);
+    auto headers = provider_->auth_headers();
+    auto url = provider_->messages_url();
+
+    auto response = co_await provider_->http_client().post_json(
         url, body, std::move(headers), options.cancel
     );
 
     auto parsed = ai::json::parse(response.body);
-    co_return parse_response(parsed);
+    auto result = parse_response(parsed);
+
+    // For structured output the JSON arrives in the forced tool_use block's
+    // input; surface it as text so generate_object's text-parse path works.
+    if (structured) {
+        std::string json_input;
+        for (auto& c : result.content) {
+            if (auto* tc = std::get_if<ToolCallContent>(&c)) {
+                json_input = tc->input;
+                break;
+            }
+        }
+        if (!json_input.empty()) {
+            result.content.clear();
+            result.content.push_back(TextContent{.text = std::move(json_input)});
+            result.finish_reason = FinishReason::Stop;
+        }
+    }
+
+    co_return result;
 }
 
 Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
-    auto body = build_request_body(options, true);
-    auto headers = provider_.auth_headers();
-    auto url = provider_.messages_url();
+    const bool structured = options.response_format
+        && options.response_format->type == "json"
+        && options.response_format->schema;
 
-    auto response = co_await provider_.http_client().post_streaming(
+    auto body = build_request_body(options, true);
+    auto headers = provider_->auth_headers();
+    auto url = provider_->messages_url();
+
+    auto response = co_await provider_->http_client().post_streaming(
         url, body, std::move(headers), options.cancel
     );
 
     stream::SseParser sse_parser;
-    auto sse_stream = sse_parser.parse(std::move(response.body_stream));
 
-    auto stream = [](stream::SseParser parser, AsyncGenerator<stream::SseEvent> events) -> AsyncGenerator<StreamPart> {
+    // The parser must live inside the generator frame: parse()'s coroutine
+    // references the parser by address, so the parser must outlive do_stream's
+    // own frame (which is destroyed once this Task completes, while the stream
+    // is drained later by the caller). Moving it into the lambda below ensures
+    // that. Previously parse() was called here against the local sse_parser,
+    // leaving the SSE coroutine with a dangling pointer.
+    auto stream = [](stream::SseParser parser,
+                     AsyncGenerator<std::vector<uint8_t>> bytes,
+                     bool structured) -> AsyncGenerator<StreamPart> {
+        auto events = parser.parse(std::move(bytes));
         Usage usage{};
         FinishReason finish_reason = FinishReason::Stop;
         std::string current_tool_id;
@@ -494,11 +544,18 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                             current_tool_id = std::string(id_it->value().as_string());
                         if (name_it != block.end() && name_it->value().is_string())
                             current_tool_name = std::string(name_it->value().as_string());
-                        in_tool_input = true;
-                        co_yield StreamPart{ToolInputStart{
-                            .id = current_tool_id,
-                            .tool_name = current_tool_name,
-                        }};
+                        if (structured) {
+                            // Map the forced JSON tool's input onto the text
+                            // channel so stream_object can accumulate it.
+                            in_text = true;
+                            co_yield StreamPart{TextStart{.id = "0"}};
+                        } else {
+                            in_tool_input = true;
+                            co_yield StreamPart{ToolInputStart{
+                                .id = current_tool_id,
+                                .tool_name = current_tool_name,
+                            }};
+                        }
                     } else if (block_type == "thinking") {
                         co_yield StreamPart{ReasoningStart{.id = "0"}};
                     }
@@ -519,10 +576,15 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                     } else if (delta_type == "input_json_delta") {
                         auto pj_it = delta.find("partial_json");
                         if (pj_it != delta.end() && pj_it->value().is_string()) {
-                            co_yield StreamPart{ToolInputDelta{
-                                .id = current_tool_id,
-                                .delta = std::string(pj_it->value().as_string()),
-                            }};
+                            auto pj = std::string(pj_it->value().as_string());
+                            if (structured) {
+                                co_yield StreamPart{TextDelta{.id = "0", .delta = std::move(pj)}};
+                            } else {
+                                co_yield StreamPart{ToolInputDelta{
+                                    .id = current_tool_id,
+                                    .delta = std::move(pj),
+                                }};
+                            }
                         }
                     } else if (delta_type == "thinking_delta") {
                         auto th_it = delta.find("thinking");
@@ -582,7 +644,7 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                 co_yield StreamPart{ErrorPart{.message = std::move(msg)}};
             }
         }
-    }(std::move(sse_parser), std::move(sse_stream));
+    }(std::move(sse_parser), std::move(response.body_stream), structured);
 
     co_return StreamResult{
         .stream = std::move(stream),

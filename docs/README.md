@@ -4,10 +4,10 @@ A high-performance C++20 AI agent framework.
 
 Like **llama.cpp** is to inference, **ai-sdk-cpp** is to agent orchestration. One native engine, any language.
 
-- **11 providers** — Anthropic, OpenAI, Google, Groq, xAI, Mistral, Fireworks, Together AI, Perplexity, Cohere, DeepSeek
+- **13 providers** — Anthropic, OpenAI, Google, Amazon Bedrock, DeepSeek, Groq, xAI, Mistral, Fireworks, Together AI, Perplexity, Cohere, MoonshotAI
 - **Automatic tool loops** — define tools, the agent calls them until the task is done
 - **Streaming** — SSE parsing, token-by-token output, backpressure
-- **Any language** — C++, Python, TypeScript, Rust, Go, or anything with C FFI
+- **Multi-language** — C++, Python, TypeScript/Node.js, and C — or any language via the shared C FFI
 - **C++20 coroutines** — native async I/O, no threads for simple use cases
 
 ---
@@ -16,13 +16,13 @@ Like **llama.cpp** is to inference, **ai-sdk-cpp** is to agent orchestration. On
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Your Agent (C++ / Python / TypeScript / Rust / Go / C) │
+│  Your Agent (C++ / Python / TypeScript / C)             │
 ├─────────────────────────────────────────────────────────┤
-│  Bindings  (pybind11 │ N-API │ cgo │ FFI │ C header)    │
+│  Bindings  (pybind11 / N-API / C header / FFI)          │
 ├─────────────────────────────────────────────────────────┤
 │  Core      (generate_text · stream_text · Agent loop)   │
 ├─────────┬────────┬────────┬────────┬────────┬───────────┤
-│Anthropic│ OpenAI │ Google │  Groq  │  xAI   │ 6 more…   │
+│Anthropic│ OpenAI │ Google │  Groq  │  xAI   │ 8 more…   │
 ├─────────┴────────┴────────┴────────┴────────┴───────────┤
 │  HTTP/TLS (Boost.Beast) + SSE Parser + WebSocket        │
 └─────────────────────────────────────────────────────────┘
@@ -73,46 +73,6 @@ const { text } = await generateText({ model, prompt: 'Hello!' });
 console.log(text);
 ```
 
-### Rust
-
-```rust
-use ai_sdk::{Context, Agent};
-
-fn main() {
-    let ctx = Context::new();
-    let provider = ctx.provider("anthropic", None, None);
-    let model = provider.model("claude-sonnet-4-20250514");
-
-    let result = ai_sdk::generate_text(&model, "Hello!", None).unwrap();
-    println!("{}", result.text);
-}
-```
-
-### Go
-
-```go
-package main
-
-import (
-    "fmt"
-    ai "your-module/aisdk"
-)
-
-func main() {
-    ctx := ai.NewContext()
-    defer ctx.Close()
-
-    provider := ctx.NewProvider("anthropic", "", "")
-    defer provider.Close()
-
-    model := provider.NewModel("claude-sonnet-4-20250514")
-    defer model.Close()
-
-    result, _ := ai.GenerateText(model, "Hello!", nil)
-    fmt.Println(result.Text)
-}
-```
-
 ### C
 
 ```c
@@ -146,6 +106,7 @@ int main(void) {
 | Anthropic | `create_anthropic` | `ANTHROPIC_API_KEY` |
 | OpenAI | `create_openai` | `OPENAI_API_KEY` |
 | Google | `create_google` | `GOOGLE_API_KEY` |
+| Amazon Bedrock | `create_bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
 | Groq | `create_groq` | `GROQ_API_KEY` |
 | xAI | `create_xai` | `XAI_API_KEY` |
 | Mistral | `create_mistral` | `MISTRAL_API_KEY` |
@@ -154,6 +115,7 @@ int main(void) {
 | Perplexity | `create_perplexity` | `PERPLEXITY_API_KEY` |
 | Cohere | `create_cohere` | `COHERE_API_KEY` |
 | DeepSeek | `create_deepseek` | `DEEPSEEK_API_KEY` |
+| MoonshotAI | `create_moonshotai` | `MOONSHOT_API_KEY` |
 
 All providers share the same interface. Switch models with a one-line change.
 
@@ -250,4 +212,4 @@ Step-by-step tutorials for building a coding agent from scratch:
 
 ## License
 
-Apache-2.0
+MIT — see [LICENSE](../LICENSE) for details.

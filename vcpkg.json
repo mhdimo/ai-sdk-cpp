@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "ai-sdk-cpp",
+  "version": "0.1.0",
+  "description": "A C++20 AI agent framework — the orchestration layer between your application and LLM providers.",
+  "license": "MIT",
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-json",
+    "openssl",
+    {
+      "name": "catch2",
+      "version>=": "3.5.0"
+    }
+  ]
+}

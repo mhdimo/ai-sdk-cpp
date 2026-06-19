@@ -6,6 +6,8 @@
 #include <ai/stream/async_generator.hpp>
 #include <ai/util/cancellation.hpp>
 #include <boost/json.hpp>
+#include <boost/asio/io_context.hpp>
+#include <chrono>
 #include <string>
 #include <vector>
 #include <optional>
@@ -66,5 +68,27 @@ public:
 };
 
 using BatchProcessorPtr = std::shared_ptr<BatchProcessor>;
+
+/// Options for run_batch(): submit a batch, poll until it reaches a terminal
+/// state, then fetch results. The poll wait is driven on `io_context`.
+struct BatchRunOptions {
+    BatchProcessorPtr processor;
+    std::vector<BatchRequest> requests;
+    boost::asio::io_context& io_context;
+    std::chrono::milliseconds poll_interval{5000};
+    std::optional<int> max_polls;       // safety cap; nullopt = unlimited
+    CancellationToken cancel = {};
+};
+
+struct BatchRunResult {
+    std::string batch_id;
+    std::vector<BatchResponseItem> results;   // empty unless final_status is Completed
+    BatchInfo final_status;
+};
+
+/// Submit a batch and poll until it reaches a terminal state, then fetch
+/// results. Throws if the batch fails, is cancelled, expires, or exceeds
+/// max_polls without completing.
+Task<BatchRunResult> run_batch(BatchRunOptions options);
 
 } // namespace ai::batch

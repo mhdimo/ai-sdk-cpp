@@ -3,6 +3,11 @@
 #include <ai/util/json.hpp>
 #include <ai/error/ai_error.hpp>
 
+#include <coroutine>
+#include <exception>
+#include <memory>
+#include <optional>
+
 namespace ai {
 
 namespace {
@@ -141,17 +146,92 @@ Task<std::vector<ToolCallResult>> execute_tools(
     co_return results;
 }
 
+/// One-shot completion sink: the stream wrapper fulfills `value` (or `error`)
+/// when the stream ends; full_result awaits it so callers receive the complete
+/// GenerateTextResult after draining the stream.
+struct FullResultSink {
+    std::optional<GenerateTextResult> value;
+    std::exception_ptr error;
+    std::coroutine_handle<> waiter;
+
+    void fulfill(GenerateTextResult r) {
+        value.emplace(std::move(r));
+        if (waiter) waiter.resume();
+    }
+    void fail(std::exception_ptr e) {
+        error = e;
+        if (waiter) waiter.resume();
+    }
+};
+
+struct SinkAwaitable {
+    std::shared_ptr<FullResultSink> sink;
+    bool await_ready() const noexcept {
+        return sink->value.has_value() || sink->error;
+    }
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) const noexcept {
+        sink->waiter = h;
+        return std::noop_coroutine();
+    }
+    void await_resume() {
+        if (sink->error) std::rethrow_exception(sink->error);
+    }
+};
+
+Task<GenerateTextResult> make_full_result_task(std::shared_ptr<FullResultSink> sink) {
+    co_await SinkAwaitable{sink};
+    co_return std::move(*sink->value);
+}
+
+/// Wraps a stream so that draining it also accumulates the final
+/// GenerateTextResult and fulfills `sink` on completion (or fails it on error).
+AsyncGenerator<StreamPart> wrap_with_full_result(
+    AsyncGenerator<StreamPart> inner,
+    std::shared_ptr<FullResultSink> sink
+) {
+    std::string text;
+    Usage usage{};
+    FinishReason finish_reason = FinishReason::Stop;
+    std::vector<Warning> warnings;
+
+    try {
+        while (auto part = co_await inner.next()) {
+            if (auto* d = std::get_if<TextDelta>(&*part)) {
+                text += d->delta;
+            } else if (auto* f = std::get_if<FinishPart>(&*part)) {
+                usage = f->usage;
+                finish_reason = f->reason;
+            } else if (auto* s = std::get_if<StreamStart>(&*part)) {
+                warnings = s->warnings;
+            }
+            co_yield *part;
+        }
+    } catch (...) {
+        sink->fail(std::current_exception());
+        throw;
+    }
+
+    sink->fulfill(GenerateTextResult{
+        .text = std::move(text),
+        .finish_reason = finish_reason,
+        .usage = usage,
+        .warnings = std::move(warnings),
+    });
+}
+
 /// Internal coroutine that produces a multi-step stream with tool execution.
 /// Yields StreamPart values from ALL steps seamlessly.
 AsyncGenerator<StreamPart> stream_text_multi_step(
     LanguageModelPtr model,
     StreamTextOptions options,
-    Prompt prompt
+    Prompt prompt,
+    std::shared_ptr<FullResultSink> sink
 ) {
     std::vector<StepResult> steps;
     Usage total_usage{};
     std::vector<ToolCallResult> all_tool_calls;
 
+    try {
     for (int step = 0; step < options.max_steps; ++step) {
         options.cancel.throw_if_cancelled();
 
@@ -255,6 +335,20 @@ AsyncGenerator<StreamPart> stream_text_multi_step(
 
         if (!should_continue) break;
     }
+    } catch (...) {
+        sink->fail(std::current_exception());
+        throw;
+    }
+
+    GenerateTextResult final_result;
+    final_result.usage = total_usage;
+    if (!steps.empty()) {
+        final_result.finish_reason = steps.back().result.finish_reason;
+        final_result.text = steps.back().result.text();
+        final_result.warnings = steps.back().result.warnings;
+    }
+    final_result.steps = std::move(steps);
+    sink->fulfill(std::move(final_result));
 }
 
 } // namespace
@@ -266,24 +360,26 @@ Task<StreamTextResult> stream_text(StreamTextOptions options) {
         : wrap_language_model(options.model, options.middleware);
 
     auto prompt = build_prompt(options);
+    auto sink = std::make_shared<FullResultSink>();
 
     // If single step and no tools, use simplified path
     if (options.max_steps <= 1 || options.tools.empty()) {
         auto call_opts = build_call_options(options, prompt);
         auto stream_result = co_await model->do_stream(std::move(call_opts));
+        auto stream = wrap_with_full_result(std::move(stream_result.stream), sink);
 
         co_return StreamTextResult{
-            .stream = std::move(stream_result.stream),
-            .full_result = Task<GenerateTextResult>{nullptr},
+            .stream = std::move(stream),
+            .full_result = make_full_result_task(sink),
         };
     }
 
     // Multi-step streaming with tool execution
-    auto stream = stream_text_multi_step(std::move(model), std::move(options), std::move(prompt));
+    auto stream = stream_text_multi_step(std::move(model), std::move(options), std::move(prompt), sink);
 
     co_return StreamTextResult{
         .stream = std::move(stream),
-        .full_result = Task<GenerateTextResult>{nullptr},
+        .full_result = make_full_result_task(sink),
     };
 }
 

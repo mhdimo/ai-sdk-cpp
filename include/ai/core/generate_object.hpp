@@ -11,6 +11,7 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <memory>
 
 namespace ai {
 
@@ -54,17 +55,29 @@ struct StreamObjectOptions {
 
     std::optional<int> max_output_tokens;
     std::optional<double> temperature;
+    std::optional<double> top_p;
 
+    std::vector<MiddlewarePtr> middleware;
     CancellationToken cancel;
     int max_retries = 2;
 
     boost::json::object provider_options;
 };
 
-struct StreamObjectResult {
-    AsyncGenerator<boost::json::value> partial_object_stream;
+/// Final state of a stream_object() call, populated incrementally as the
+/// partial-object stream is drained. Read these fields *after* the consumer has
+/// finished iterating partial_object_stream.
+struct StreamObjectFinalState {
     boost::json::value object;
     Usage usage;
+    FinishReason finish_reason = FinishReason::Other;
+    bool had_output = false;
+    bool validated = false;
+};
+
+struct StreamObjectResult {
+    AsyncGenerator<boost::json::value> partial_object_stream;
+    std::shared_ptr<StreamObjectFinalState> final_state;
 };
 
 Task<GenerateObjectResult> generate_object(GenerateObjectOptions options);

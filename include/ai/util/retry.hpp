@@ -82,6 +82,8 @@ auto retry_async(RetryOptions opts, F&& fn)
     using ResultType = typename std::invoke_result_t<F>::value_type;
 
     for (int attempt = 0;; ++attempt) {
+        std::chrono::milliseconds retry_delay{};
+        bool do_retry = false;
         try {
             ResultType result = co_await fn();
             co_return std::move(result);
@@ -89,8 +91,12 @@ auto retry_async(RetryOptions opts, F&& fn)
             if (attempt >= opts.max_retries || !detail::should_retry(e)) {
                 throw;
             }
-            auto delay = detail::get_retry_delay(e, opts, attempt);
-            co_await detail::AsyncSleep{delay};
+            retry_delay = detail::get_retry_delay(e, opts, attempt);
+            do_retry = true;
+        }
+        // co_await cannot appear in a catch handler; sleep after it.
+        if (do_retry) {
+            co_await detail::AsyncSleep{retry_delay};
         }
     }
 }
@@ -104,6 +110,8 @@ auto retry_async(RetryOptions opts, F&& fn) -> Task<void>
     }
 {
     for (int attempt = 0;; ++attempt) {
+        std::chrono::milliseconds retry_delay{};
+        bool do_retry = false;
         try {
             co_await fn();
             co_return;
@@ -111,8 +119,12 @@ auto retry_async(RetryOptions opts, F&& fn) -> Task<void>
             if (attempt >= opts.max_retries || !detail::should_retry(e)) {
                 throw;
             }
-            auto delay = detail::get_retry_delay(e, opts, attempt);
-            co_await detail::AsyncSleep{delay};
+            retry_delay = detail::get_retry_delay(e, opts, attempt);
+            do_retry = true;
+        }
+        // co_await cannot appear in a catch handler; sleep after it.
+        if (do_retry) {
+            co_await detail::AsyncSleep{retry_delay};
         }
     }
 }

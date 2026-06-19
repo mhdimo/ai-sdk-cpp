@@ -1,6 +1,7 @@
 #include <ai/providers/anthropic/anthropic.hpp>
 #include <ai/providers/anthropic/anthropic_model.hpp>
 #include <ai/providers/anthropic/anthropic_file_storage.hpp>
+#include <ai/providers/anthropic/anthropic_batch.hpp>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -8,7 +9,9 @@ namespace ai::providers::anthropic {
 
 AnthropicProvider::AnthropicProvider(AnthropicOptions options)
     : options_(std::move(options))
-    , http_client_(options_.io_context) {
+    , http_client_(options_.http_client
+        ? options_.http_client
+        : std::make_shared<http::HttpClient>(options_.io_context)) {
     if (options_.api_key) {
         resolved_api_key_ = *options_.api_key;
     } else if (options_.auth_token) {
@@ -22,7 +25,11 @@ AnthropicProvider::AnthropicProvider(AnthropicOptions options)
 }
 
 LanguageModelPtr AnthropicProvider::language_model(std::string_view model_id) {
-    return std::make_shared<AnthropicLanguageModel>(std::string(model_id), *this);
+    return std::make_shared<AnthropicLanguageModel>(std::string(model_id), shared_from_this());
+}
+
+std::shared_ptr<ai::batch::BatchProcessor> AnthropicProvider::batch_processor(std::string_view model_id) {
+    return std::make_shared<AnthropicBatchProcessor>(*this, std::string(model_id));
 }
 
 FileStoragePtr AnthropicProvider::file_storage() {

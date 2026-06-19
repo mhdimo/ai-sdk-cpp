@@ -380,11 +380,16 @@ Task<StreamResult> GoogleLanguageModel::do_stream(CallOptions options) {
     );
 
     stream::SseParser sse_parser;
-    auto sse_stream = sse_parser.parse(std::move(response.body_stream));
 
+    // Own the parser in the generator frame (see anthropic_model.cpp): parse()'s
+    // coroutine references the parser by address and must outlive do_stream's
+    // frame, which is destroyed once this Task completes while the stream is
+    // drained later by the caller.
     auto stream = [model_id = model_id_](
-        AsyncGenerator<stream::SseEvent> events
+        stream::SseParser parser,
+        AsyncGenerator<std::vector<uint8_t>> bytes
     ) -> AsyncGenerator<StreamPart> {
+        auto events = parser.parse(std::move(bytes));
         Usage usage{};
         FinishReason finish_reason = FinishReason::Stop;
         bool text_started = false;
@@ -498,7 +503,7 @@ Task<StreamResult> GoogleLanguageModel::do_stream(CallOptions options) {
         }
 
         co_yield StreamPart{FinishPart{.reason = finish_reason, .usage = usage}};
-    }(std::move(sse_stream));
+    }(std::move(sse_parser), std::move(response.body_stream));
 
     co_return StreamResult{
         .stream = std::move(stream),
