@@ -16,6 +16,8 @@ struct OpenAIOptions {
     std::optional<std::string> organization;
     std::optional<std::string> project;
     boost::asio::io_context& io_context;
+    // Optional injected client (tests); null = construct a real HttpClient.
+    std::shared_ptr<http::IHttpClient> http_client;
 };
 
 class OpenAIProvider : public Provider {
@@ -32,11 +34,11 @@ public:
     const OpenAIOptions& options() const { return options_; }
     http::Headers auth_headers() const;
     std::string chat_completions_url() const;
-    http::HttpClient& http_client() { return http_client_; }
+    http::IHttpClient& http_client() { return *http_client_; }
 
 private:
     OpenAIOptions options_;
-    http::HttpClient http_client_;
+    std::shared_ptr<http::IHttpClient> http_client_;
     std::string resolved_api_key_;
 };
 

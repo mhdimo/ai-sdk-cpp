@@ -15,8 +15,15 @@
 #include <ai/prompt/message.hpp>
 #include <ai/tool/tool.hpp>
 #include <ai/tool/tool_set.hpp>
+#include <ai/permission/permission.hpp>
+#include <ai/tools/standard/standard_toolkit.hpp>
 #include <ai/schema/json_schema.hpp>
 #include <ai/agent/tool_loop_agent.hpp>
+#include <ai/session/session.hpp>
+#include <ai/session/context_strategy.hpp>
+#include <ai/session/store.hpp>
+#include <ai/memory/memory.hpp>
+#include <ai/coding_agent.hpp>
 #include <ai/error/ai_error.hpp>
 #include <ai/error/api_call_error.hpp>
 #include <ai/util/cancellation.hpp>
@@ -33,7 +40,6 @@
 #include <ai/core/generate_image.hpp>
 #include <ai/core/generate_speech.hpp>
 #include <ai/core/transcribe.hpp>
-#include <ai/core/generate_video.hpp>
 #include <ai/core/batch.hpp>
 #include <ai/core/rerank.hpp>
 #include <ai/stream/data_stream.hpp>

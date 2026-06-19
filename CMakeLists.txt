@@ -60,7 +60,15 @@ set(AI_SDK_CORE_SOURCES
     src/core/embed.cpp
     src/core/batch.cpp
     src/agent/tool_loop_agent.cpp
+    src/agent/agent.cpp
+    src/session/session.cpp
+    src/session/context_strategy.cpp
+    src/session/store.cpp
+    src/permission/permission.cpp
     src/tool/tool_set.cpp
+    src/tools/standard/standard_toolkit.cpp
+    src/memory/memory.cpp
+    src/coding_agent.cpp
     src/model/middleware.cpp
     src/mcp/mcp_client.cpp
     src/mcp/mcp_sse_transport.cpp

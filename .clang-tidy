@@ -1,0 +1,18 @@
+# Conservative clang-tidy checks for ai-sdk-cpp.
+# Run: clang-tidy -p build <file>
+Checks: >
+  -*,
+  bugprone-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-named-parameter,
+  -readability-else-after-return
+WarningsAsErrors: ''
+HeaderFilterRegex: 'include/ai/.*'
+FormatStyle: file

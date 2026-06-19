@@ -21,6 +21,19 @@ public:
         std::vector<Message> messages,
         CancellationToken cancel = {}
     ) = 0;
+
+    /// Streaming entry point. Default implementation throws (agents that do
+    /// not support streaming are still valid Agent subclasses). Subclasses
+    /// such as ToolLoopAgent override this.
+    virtual Task<StreamTextResult> stream(
+        std::string prompt,
+        CancellationToken cancel = {}
+    );
+
+    virtual Task<StreamTextResult> stream(
+        std::vector<Message> messages,
+        CancellationToken cancel = {}
+    );
 };
 
 } // namespace ai

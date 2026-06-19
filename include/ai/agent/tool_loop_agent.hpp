@@ -46,12 +46,12 @@ public:
     Task<StreamTextResult> stream(
         std::string prompt,
         CancellationToken cancel = {}
-    );
+    ) override;
 
     Task<StreamTextResult> stream(
         std::vector<Message> messages,
         CancellationToken cancel = {}
-    );
+    ) override;
 
 private:
     ToolLoopAgentOptions options_;

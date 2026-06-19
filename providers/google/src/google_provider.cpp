@@ -6,7 +6,9 @@ namespace ai::providers::google {
 
 GoogleProvider::GoogleProvider(GoogleOptions options)
     : options_(std::move(options))
-    , http_client_(options_.io_context) {
+    , http_client_(options_.http_client
+        ? options_.http_client
+        : std::make_shared<http::HttpClient>(options_.io_context)) {
     if (options_.api_key) {
         resolved_api_key_ = *options_.api_key;
     } else {

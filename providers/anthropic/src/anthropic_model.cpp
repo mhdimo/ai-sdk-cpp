@@ -470,9 +470,17 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
     );
 
     stream::SseParser sse_parser;
-    auto sse_stream = sse_parser.parse(std::move(response.body_stream));
 
-    auto stream = [](stream::SseParser parser, AsyncGenerator<stream::SseEvent> events, bool structured) -> AsyncGenerator<StreamPart> {
+    // The parser must live inside the generator frame: parse()'s coroutine
+    // references the parser by address, so the parser must outlive do_stream's
+    // own frame (which is destroyed once this Task completes, while the stream
+    // is drained later by the caller). Moving it into the lambda below ensures
+    // that. Previously parse() was called here against the local sse_parser,
+    // leaving the SSE coroutine with a dangling pointer.
+    auto stream = [](stream::SseParser parser,
+                     AsyncGenerator<std::vector<uint8_t>> bytes,
+                     bool structured) -> AsyncGenerator<StreamPart> {
+        auto events = parser.parse(std::move(bytes));
         Usage usage{};
         FinishReason finish_reason = FinishReason::Stop;
         std::string current_tool_id;
@@ -636,7 +644,7 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                 co_yield StreamPart{ErrorPart{.message = std::move(msg)}};
             }
         }
-    }(std::move(sse_parser), std::move(sse_stream), structured);
+    }(std::move(sse_parser), std::move(response.body_stream), structured);
 
     co_return StreamResult{
         .stream = std::move(stream),

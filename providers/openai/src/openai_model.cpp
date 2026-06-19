@@ -12,7 +12,9 @@ namespace ai::providers::openai {
 
 OpenAIProvider::OpenAIProvider(OpenAIOptions options)
     : options_(std::move(options))
-    , http_client_(options_.io_context) {
+    , http_client_(options_.http_client
+        ? options_.http_client
+        : std::make_shared<http::HttpClient>(options_.io_context)) {
     if (options_.api_key) {
         resolved_api_key_ = *options_.api_key;
     } else {
@@ -392,9 +394,14 @@ Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
     );
 
     stream::SseParser sse_parser;
-    auto sse_stream = sse_parser.parse(std::move(response.body_stream));
 
-    auto stream = [](AsyncGenerator<stream::SseEvent> events) -> AsyncGenerator<StreamPart> {
+    // Own the parser in the generator frame (see anthropic_model.cpp): parse()'s
+    // coroutine references the parser by address and must outlive do_stream's
+    // frame, which is destroyed once this Task completes while the stream is
+    // drained later by the caller.
+    auto stream = [](stream::SseParser parser,
+                     AsyncGenerator<std::vector<uint8_t>> bytes) -> AsyncGenerator<StreamPart> {
+        auto events = parser.parse(std::move(bytes));
         Usage usage{};
         FinishReason finish_reason = FinishReason::Stop;
         bool text_started = false;
@@ -496,7 +503,7 @@ Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
         }
 
         co_yield StreamPart{FinishPart{.reason = finish_reason, .usage = usage}};
-    }(std::move(sse_stream));
+    }(std::move(sse_parser), std::move(response.body_stream));
 
     co_return StreamResult{
         .stream = std::move(stream),
