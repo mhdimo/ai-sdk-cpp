@@ -28,6 +28,16 @@ option(AI_SDK_PROVIDER_TOGETHERAI "Build Together AI provider" ON)
 option(AI_SDK_PROVIDER_PERPLEXITY "Build Perplexity provider" ON)
 option(AI_SDK_PROVIDER_COHERE "Build Cohere provider" ON)
 
+# Expose provider enablement to the preprocessor so the CLI / C binding can
+# conditionally compile provider code (they include all providers by default).
+foreach(pv IN ITEMS
+    ANTHROPIC OPENAI GOOGLE DEEPSEEK MOONSHOTAI BEDROCK OPENAI_COMPATIBLE
+    XAI MISTRAL GROQ FIREWORKS TOGETHERAI PERPLEXITY COHERE)
+    if(AI_SDK_PROVIDER_${pv})
+        add_compile_definitions(AI_SDK_PROVIDER_${pv})
+    endif()
+endforeach()
+
 find_package(Boost 1.82 REQUIRED COMPONENTS json)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
@@ -71,7 +81,7 @@ set(AI_SDK_CORE_SOURCES
     src/coding_agent.cpp
     src/model/middleware.cpp
     src/mcp/mcp_client.cpp
-    src/mcp/mcp_sse_transport.cpp
+    src/mcp/transport.cpp
     src/telemetry/telemetry.cpp
     src/util/token_count.cpp
     src/util/rate_limiter.cpp

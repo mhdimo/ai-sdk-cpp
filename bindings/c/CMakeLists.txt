@@ -7,20 +7,16 @@ target_include_directories(ai-sdk-c PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(ai-sdk-c PRIVATE
-    ai-sdk-core
-    ai-sdk-openai
-    ai-sdk-anthropic
-    ai-sdk-google
-    ai-sdk-deepseek
-    ai-sdk-groq
-    ai-sdk-xai
-    ai-sdk-mistral
-    ai-sdk-fireworks
-    ai-sdk-togetherai
-    ai-sdk-perplexity
-    ai-sdk-cohere
-)
+target_link_libraries(ai-sdk-c PRIVATE ai-sdk-core)
+# Only link providers that are actually built (some may be disabled).
+foreach(pv
+    ai-sdk-openai ai-sdk-anthropic ai-sdk-google ai-sdk-deepseek ai-sdk-groq
+    ai-sdk-xai ai-sdk-mistral ai-sdk-fireworks ai-sdk-togetherai
+    ai-sdk-perplexity ai-sdk-cohere)
+    if(TARGET ${pv})
+        target_link_libraries(ai-sdk-c PRIVATE ${pv})
+    endif()
+endforeach()
 
 set_target_properties(ai-sdk-c PROPERTIES
     OUTPUT_NAME ai_sdk

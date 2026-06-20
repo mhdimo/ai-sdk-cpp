@@ -1,7 +1,13 @@
 #include <ai/ai.hpp>
+#if defined(AI_SDK_PROVIDER_ANTHROPIC)
 #include <ai/providers/anthropic/anthropic.hpp>
+#endif
+#if defined(AI_SDK_PROVIDER_OPENAI)
 #include <ai/providers/openai/openai.hpp>
+#endif
+#if defined(AI_SDK_PROVIDER_BEDROCK)
 #include <ai/providers/bedrock/bedrock.hpp>
+#endif
 #include <boost/asio.hpp>
 #include <iostream>
 #include <string>
@@ -276,11 +282,26 @@ int main(int argc, char* argv[]) {
     ai::ProviderPtr provider_instance;
 
     if (provider_name == "anthropic") {
+#if defined(AI_SDK_PROVIDER_ANTHROPIC)
         provider_instance = ai::providers::anthropic::create_anthropic({.io_context = ioc});
+#else
+        std::cerr << "Anthropic provider is not built.\n";
+        return 1;
+#endif
     } else if (provider_name == "openai") {
+#if defined(AI_SDK_PROVIDER_OPENAI)
         provider_instance = ai::providers::openai::create_openai({.io_context = ioc});
+#else
+        std::cerr << "OpenAI provider is not built.\n";
+        return 1;
+#endif
     } else if (provider_name == "bedrock") {
+#if defined(AI_SDK_PROVIDER_BEDROCK)
         provider_instance = ai::providers::bedrock::create_bedrock({.io_context = ioc});
+#else
+        std::cerr << "Bedrock provider is not built.\n";
+        return 1;
+#endif
     } else {
         std::cerr << "Unknown provider: " << provider_name << "\n";
         return 1;

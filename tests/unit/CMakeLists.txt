@@ -14,6 +14,7 @@ add_executable(ai-sdk-tests
     test_coding_agent.cpp
     test_retry.cpp
     test_rate_limiter.cpp
+    test_mcp.cpp
 )
 
 target_link_libraries(ai-sdk-tests PRIVATE
