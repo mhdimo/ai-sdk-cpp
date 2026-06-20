@@ -11,6 +11,8 @@
 
 #include <ai/coding_agent.hpp>
 #include <ai/providers/anthropic/anthropic.hpp>
+#include <ai/mcp/mcp_client.hpp>
+#include <boost/json.hpp>
 
 #include <boost/asio.hpp>
 
@@ -68,4 +70,47 @@ TEST_CASE("CodingAgent end-to-end against a live provider", "[live][smoke]") {
     std::cout << "[live] usage: "
               << result.usage.input_tokens.total.value_or(0) << " in / "
               << result.usage.output_tokens.total.value_or(0) << " out\n";
+}
+
+TEST_CASE("MCP client against a real streamable-HTTP server (zread)", "[live][mcp]") {
+    if (!live_enabled()) {
+        SKIP("set AI_SDK_RUN_LIVE=1, MCP_SERVER_URL, and MCP_SERVER_AUTH to run live MCP");
+    }
+    const char* url_env = std::getenv("MCP_SERVER_URL");
+    const char* auth_env = std::getenv("MCP_SERVER_AUTH");
+    if (!url_env) {
+        SKIP("set MCP_SERVER_URL (and MCP_SERVER_AUTH) for the live MCP test");
+    }
+
+    boost::asio::io_context ioc;
+
+    ai::mcp::McpServerConfig cfg;
+    cfg.name = "zread";
+    cfg.transport = "http";
+    cfg.url = url_env;
+    if (auth_env) {
+        std::string auth = auth_env;
+        cfg.headers["Authorization"] =
+            (auth.rfind("Bearer ", 0) == 0) ? auth : ("Bearer " + auth);
+    }
+
+    ai::mcp::McpClient client(cfg);
+    run(client.connect(), ioc);  // initialize handshake
+    REQUIRE(client.is_connected());
+
+    auto tools = run(client.list_tools(), ioc);
+    std::cout << "[live] MCP tools: " << tools.size() << "\n";
+    for (auto& t : tools) {
+        std::cout << "[live]   - " << t.name << "\n";
+    }
+    REQUIRE(!tools.empty());
+
+    auto result = run(client.call_tool(
+        "get_repo_structure",
+        boost::json::object{{"repo_name", "anthropics/anthropic-sdk-python"}}), ioc);
+
+    std::string serialized = boost::json::serialize(result);
+    std::cout << "[live] get_repo_structure -> "
+              << serialized.substr(0, std::min(serialized.size(), size_t(200))) << "\n";
+    REQUIRE_FALSE(serialized.empty());
 }

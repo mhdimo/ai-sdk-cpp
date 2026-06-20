@@ -68,6 +68,7 @@ private:
     boost::asio::io_context ioc_;
     http::HttpClient client_;
     std::queue<std::string> incoming_;
+    std::string session_id_;  // streamable-HTTP session, echoed on requests
 };
 
 /// In-memory transport for tests: send() records the message and, if a handler

@@ -223,6 +223,9 @@ void StreamableHttpTransport::send(const std::string& json_message) {
     if (!api_key_.empty()) {
         h["Authorization"] = "Bearer " + api_key_;
     }
+    if (!session_id_.empty()) {
+        h["Mcp-Session-Id"] = session_id_;  // echo the streamable-HTTP session
+    }
 
     auto body_value = ai::json::parse(json_message);
 
@@ -234,33 +237,64 @@ void StreamableHttpTransport::send(const std::string& json_message) {
     }
     auto resp = task.get();
 
-    if (resp.body.empty()) return;  // e.g. 202 for a notification
+    // Case-insensitive header lookup helper.
+    auto header = [&resp](const std::string& key) -> std::string {
+        for (const auto& [k, v] : resp.headers) {
+            if (k.size() == key.size()) {
+                bool match = true;
+                for (std::size_t i = 0; i < k.size(); ++i) {
+                    if (std::tolower(static_cast<unsigned char>(k[i])) !=
+                        std::tolower(static_cast<unsigned char>(key[i]))) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return v;
+            }
+        }
+        return {};
+    };
 
-    // Determine framing from the response content type.
-    std::string content_type;
-    if (auto it = resp.headers.find("content-type"); it != resp.headers.end()) {
-        content_type = it->second;
-    }
+    // Capture the streamable-HTTP session id for subsequent requests.
+    std::string sid = header("mcp-session-id");
+    if (!sid.empty()) session_id_ = sid;
 
-    if (content_type.find("text/event-stream") != std::string::npos) {
-        // SSE: queue each `data:` event so notifications + final response are
-        // each returned by a separate receive().
+    if (resp.body.empty()) return;  // e.g. 202 Accepted for a notification
+
+    std::string content_type = header("content-type");
+    bool is_sse = content_type.find("text/event-stream") != std::string::npos;
+
+    auto push_data = [this](const std::string& data) {
+        std::string d = data;
+        if (!d.empty() && d.front() == ' ') d.erase(0, 1);  // tolerate "data: " or "data:"
+        if (d.empty()) return;
+        if (auto parsed = ai::json::safe_parse(d)) {
+            incoming_.push(boost::json::serialize(*parsed));
+        }
+    };
+
+    if (is_sse) {
         std::istringstream ss(resp.body);
         std::string line;
-        std::string data;
         while (std::getline(ss, line)) {
-            while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+                line.pop_back();
+            }
             if (line.starts_with("data:")) {
-                data = line.substr(5);
-                if (!data.empty() && data.front() == ' ') data.erase(0, 1);
-                auto parsed = ai::json::safe_parse(data);
-                if (parsed) incoming_.push(boost::json::serialize(*parsed));
+                push_data(line.substr(5));
             }
         }
     } else {
-        // Single JSON object.
-        auto parsed = ai::json::safe_parse(resp.body);
-        if (parsed) incoming_.push(boost::json::serialize(*parsed));
+        // Single JSON object, or an unmarked SSE body — try JSON, else scan for data:.
+        if (auto parsed = ai::json::safe_parse(resp.body)) {
+            incoming_.push(boost::json::serialize(*parsed));
+        } else {
+            std::istringstream ss(resp.body);
+            std::string line;
+            while (std::getline(ss, line)) {
+                if (line.starts_with("data:")) push_data(line.substr(5));
+            }
+        }
     }
 }
 
