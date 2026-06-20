@@ -15,6 +15,8 @@ add_executable(ai-sdk-tests
     test_retry.cpp
     test_rate_limiter.cpp
     test_mcp.cpp
+    test_embeddings.cpp
+    test_rerank.cpp
 )
 
 target_link_libraries(ai-sdk-tests PRIVATE
