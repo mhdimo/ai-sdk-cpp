@@ -21,40 +21,28 @@ namespace ai::mcp {
 
 namespace {
 
-// --- Content-Length framing (LSP-style) for the stdio transport ------------
+// --- Newline-delimited JSON (NDJSON) framing for MCP stdio -----------------
+// MCP stdio messages are delimited by newlines (not Content-Length/LSP framing).
 
-std::string read_framed(FILE* stream) {
-    int content_length = -1;
-    while (true) {
-        char buf[1024];
-        if (!fgets(buf, sizeof(buf), stream)) {
-            throw std::runtime_error("MCP: EOF reading from server");
-        }
-        std::string line(buf);
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
-            line.pop_back();
-        }
-        if (line.empty()) break;  // end of headers
-        if (line.starts_with("Content-Length: ")) {
-            content_length = std::stoi(line.substr(16));
-        }
+std::string read_line(FILE* stream) {
+    std::string line;
+    char buf[1024];
+    while (std::fgets(buf, sizeof(buf), stream)) {
+        line += buf;
+        if (!line.empty() && line.back() == '\n') break;  // complete line
     }
-    if (content_length < 0) {
-        throw std::runtime_error("MCP: missing Content-Length header");
+    if (line.empty()) {
+        throw std::runtime_error("MCP: EOF reading from server");
     }
-    std::string body(static_cast<size_t>(content_length), '\0');
-    size_t n = std::fread(body.data(), 1, static_cast<size_t>(content_length), stream);
-    if (static_cast<int>(n) != content_length) {
-        throw std::runtime_error("MCP: incomplete message body");
+    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+        line.pop_back();
     }
-    return body;
+    return line;
 }
 
-void write_framed(FILE* stream, const std::string& body) {
-    std::string header =
-        "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
-    std::fwrite(header.data(), 1, header.size(), stream);
+void write_line(FILE* stream, const std::string& body) {
     std::fwrite(body.data(), 1, body.size(), stream);
+    std::fputc('\n', stream);
     std::fflush(stream);
 }
 
@@ -191,14 +179,14 @@ void StdioTransport::send(const std::string& json_message) {
     if (!impl_ || !impl_->child_stdin) {
         throw std::runtime_error("MCP: transport not started");
     }
-    write_framed(impl_->child_stdin, json_message);
+    write_line(impl_->child_stdin, json_message);
 }
 
 std::string StdioTransport::receive() {
     if (!impl_ || !impl_->child_stdout) {
         throw std::runtime_error("MCP: transport not started");
     }
-    return read_framed(impl_->child_stdout);
+    return read_line(impl_->child_stdout);
 }
 
 // ---------------------------------------------------------------------------
