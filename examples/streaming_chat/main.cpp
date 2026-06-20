@@ -27,9 +27,8 @@ int main() {
     try {
         auto result = outer.get();
 
-        // The stream is an AsyncGenerator: generator.next() must be awaited from
-        // inside a coroutine. Drain it in a second Task driven on the same
-        // io_context, printing each text delta as it arrives.
+        // The stream is an AsyncGenerator: drain it in a second coroutine driven
+        // on the same io_context, printing each text delta as it arrives.
         auto consume = [](ai::AsyncGenerator<ai::StreamPart> stream) -> ai::Task<void> {
             while (auto part = co_await stream.next()) {
                 if (auto* delta = std::get_if<ai::TextDelta>(&*part)) {
@@ -42,7 +41,7 @@ int main() {
         while (!consume.done()) {
             ioc.run_one();
         }
-        consume.get(); // rethrows any stream error
+        consume.get();
 
         std::cout << "\n[Stream complete]\n";
     } catch (const std::exception& e) {
