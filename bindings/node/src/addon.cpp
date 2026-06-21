@@ -42,6 +42,7 @@ public:
     ~ToolSetWrapper();
     ai_tool_set_t handle() const { return tools_; }
     void AddTool(const Napi::CallbackInfo& info);
+    void SetTools(ai_tool_set_t h) { if (tools_) ai_tool_set_destroy(tools_); tools_ = h; }
 
 private:
     ai_tool_set_t tools_;
@@ -53,6 +54,7 @@ public:
     AgentWrapper(const Napi::CallbackInfo& info);
     ~AgentWrapper();
     Napi::Value Call(const Napi::CallbackInfo& info);
+    ai_agent_t handle() const { return agent_; }
 
 private:
     ai_agent_t agent_;
@@ -159,10 +161,13 @@ struct ToolCallbackData {
     Napi::FunctionReference callback;
 };
 
+static Napi::FunctionReference g_toolset_constructor;
+
 Napi::Object ToolSetWrapper::Init(Napi::Env env, Napi::Object exports) {
     Napi::Function func = DefineClass(env, "ToolSet", {
         InstanceMethod("add", &ToolSetWrapper::AddTool),
     });
+    g_toolset_constructor = Napi::Persistent(func);
     exports.Set("ToolSet", func);
     return exports;
 }
@@ -440,6 +445,109 @@ Napi::Value GetVersion(const Napi::CallbackInfo& info) {
     return Napi::String::New(info.Env(), ai_sdk_version());
 }
 
+// --- SessionWrapper ---
+
+class SessionWrapper : public Napi::ObjectWrap<SessionWrapper> {
+public:
+    static Napi::Object Init(Napi::Env env, Napi::Object exports);
+    SessionWrapper(const Napi::CallbackInfo& info);
+    ~SessionWrapper();
+    Napi::Value Send(const Napi::CallbackInfo& info);
+
+private:
+    ai_session_t session_;
+};
+
+Napi::Object SessionWrapper::Init(Napi::Env env, Napi::Object exports) {
+    Napi::Function func = DefineClass(env, "Session", {
+        InstanceMethod("send", &SessionWrapper::Send),
+    });
+    exports.Set("Session", func);
+    return exports;
+}
+
+SessionWrapper::SessionWrapper(const Napi::CallbackInfo& info)
+    : Napi::ObjectWrap<SessionWrapper>(info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected (agent)").ThrowAsJavaScriptException();
+        return;
+    }
+    auto agent_obj = info[0].As<Napi::Object>();
+    auto* agent_wrap = Napi::ObjectWrap<AgentWrapper>::Unwrap(agent_obj);
+    session_ = ai_session_create(agent_wrap->handle());
+    if (!session_) {
+        Napi::Error::New(env, "Failed to create session").ThrowAsJavaScriptException();
+    }
+}
+
+SessionWrapper::~SessionWrapper() {
+    if (session_) ai_session_destroy(session_);
+}
+
+Napi::Value SessionWrapper::Send(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected (prompt)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string prompt = info[0].As<Napi::String>().Utf8Value();
+    ai_generate_result_t result = {};
+    ai_status_t status = ai_session_send(session_, prompt.c_str(), &result);
+    if (status != AI_OK) {
+        std::string msg = result.text ? result.text : "Session send failed";
+        ai_generate_result_free(&result);
+        Napi::Error::New(env, msg).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("text", Napi::String::New(env, result.text ? result.text : ""));
+    obj.Set("finishReason", Napi::String::New(env, result.finish_reason ? result.finish_reason : "stop"));
+    obj.Set("inputTokens", Napi::Number::New(env, result.input_tokens));
+    obj.Set("outputTokens", Napi::Number::New(env, result.output_tokens));
+    obj.Set("steps", Napi::Number::New(env, result.steps));
+    ai_generate_result_free(&result);
+    return obj;
+}
+
+// --- Standard toolkit + permissions ---
+
+Napi::Value StandardToolkit(const Napi::CallbackInfo& info) {
+    Napi::Object obj = g_toolset_constructor.New({});
+    auto* wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(obj);
+    wrap->SetTools(ai_standard_toolkit_create());
+    return obj;
+}
+
+Napi::Value WithPermissions(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected (toolSet, policy)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto tools_obj = info[0].As<Napi::Object>();
+    auto* tools_wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(tools_obj);
+    Napi::Function policy_fn = info[1].As<Napi::Function>();
+    auto* fn_ref = new Napi::FunctionReference();
+    *fn_ref = Napi::Persistent(policy_fn);
+
+    ai_permission_policy_fn c_fn = [](const char* tool, const char* input_json,
+                                      void* ud) -> int {
+        auto* ref = static_cast<Napi::FunctionReference*>(ud);
+        Napi::Env e = ref->Env();
+        Napi::Value result = ref->Call({Napi::String::New(e, tool),
+                                        Napi::String::New(e, input_json)});
+        return result.IsNumber() ? result.As<Napi::Number>().Int32Value()
+                                 : AI_PERMISSION_DENY;
+    };
+
+    ai_tool_set_t gated = ai_with_permissions(tools_wrap->handle(), c_fn, fn_ref);
+    Napi::Object obj = g_toolset_constructor.New({});
+    auto* out_wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(obj);
+    out_wrap->SetTools(gated);
+    return obj;
+}
+
 // --- Module initialization ---
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -448,9 +556,12 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     ModelWrapper::Init(env, exports);
     ToolSetWrapper::Init(env, exports);
     AgentWrapper::Init(env, exports);
+    SessionWrapper::Init(env, exports);
 
     exports.Set("generateText", Napi::Function::New(env, GenerateText));
     exports.Set("streamText", Napi::Function::New(env, StreamText));
+    exports.Set("standardToolkit", Napi::Function::New(env, StandardToolkit));
+    exports.Set("withPermissions", Napi::Function::New(env, WithPermissions));
     exports.Set("version", Napi::Function::New(env, GetVersion));
 
     return exports;

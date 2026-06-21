@@ -23,7 +23,14 @@ interface NativeBinding {
   Agent: new (model: NativeModel, tools: NativeToolSet, instructions: string, maxSteps: number) => NativeAgent;
   generateText(model: NativeModel, opts: NativeGenerateOpts): NativeResult;
   streamText(model: NativeModel, opts: NativeGenerateOpts, callback: StreamCallback): void;
+  Session: new (agent: NativeAgent) => NativeSession;
+  standardToolkit(): NativeToolSet;
+  withPermissions(tools: NativeToolSet, policy: PermissionPolicy): NativeToolSet;
   version(): string;
+}
+
+interface NativeSession {
+  send(prompt: string): NativeResult;
 }
 
 type NativeContext = object;
@@ -266,4 +273,35 @@ export class Agent {
 
 export function version(): string {
   return native.version();
+}
+
+// --- Standard toolkit + permissions + session ---
+
+export type PermissionPolicy = (tool: string, inputJson: string) => number;
+export type StandardToolSet = NativeToolSet;
+
+export function standardToolkit(): StandardToolSet {
+  return native.standardToolkit();
+}
+
+export function withPermissions(tools: StandardToolSet, policy: PermissionPolicy): StandardToolSet {
+  return native.withPermissions(tools, policy);
+}
+
+export class Session {
+  private _native: NativeSession;
+
+  constructor(agent: Agent) {
+    this._native = new native.Session(agent['_native']);
+  }
+
+  send(prompt: string): GenerateResult {
+    const result = this._native.send(prompt);
+    return {
+      text: result.text,
+      finishReason: result.finishReason,
+      usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+      steps: result.steps,
+    };
+  }
 }
