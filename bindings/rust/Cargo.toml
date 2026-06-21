@@ -1,0 +1,14 @@
+[package]
+name = "ai-sdk-cpp"
+version = "0.1.0"
+edition = "2021"
+description = "Rust FFI bindings for ai-sdk-cpp"
+license = "MIT"
+
+[lib]
+name = "ai_sdk"
+crate-type = ["rlib", "cdylib"]
+
+[build-dependencies]
+# No build script needed if the shared library is on the linker path.
+# For automated builds, add a build.rs that locates libai_sdk.

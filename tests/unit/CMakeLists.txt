@@ -17,6 +17,7 @@ add_executable(ai-sdk-tests
     test_mcp.cpp
     test_embeddings.cpp
     test_rerank.cpp
+    test_middleware.cpp
 )
 
 target_link_libraries(ai-sdk-tests PRIVATE

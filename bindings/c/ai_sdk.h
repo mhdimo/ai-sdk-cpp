@@ -240,6 +240,17 @@ typedef int (*ai_permission_policy_fn)(const char* tool, const char* input_json,
 ai_tool_set_t ai_with_permissions(ai_tool_set_t tools, ai_permission_policy_fn policy, void* user_data);
 
 /* --------------------------------------------------------------------------
+ * Memory — persistent cross-session project knowledge.
+ * -------------------------------------------------------------------------- */
+
+typedef struct ai_memory_store* ai_memory_store_t;
+
+ai_memory_store_t ai_memory_store_create(const char* dir);
+void ai_memory_store_destroy(ai_memory_store_t store);
+ai_status_t ai_memory_save(ai_memory_store_t store, const char* scope,
+                           const char* key, const char* content);
+
+/* --------------------------------------------------------------------------
  * Utility
  * -------------------------------------------------------------------------- */
 

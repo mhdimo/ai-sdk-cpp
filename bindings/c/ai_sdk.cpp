@@ -767,6 +767,36 @@ ai_tool_set_t ai_with_permissions(ai_tool_set_t tools, ai_permission_policy_fn p
     return out;
 }
 
+// --- Memory store ---
+
+struct ai_memory_store {
+    ai::memory::MarkdownMemoryStore store;
+};
+
+ai_memory_store_t ai_memory_store_create(const char* dir) {
+    return new ai_memory_store{
+        .store = ai::memory::MarkdownMemoryStore(dir ? dir : ".agent/memory")};
+}
+
+void ai_memory_store_destroy(ai_memory_store_t store) {
+    delete store;
+}
+
+ai_status_t ai_memory_save(ai_memory_store_t store, const char* scope,
+                           const char* key, const char* content) {
+    if (!store || !scope || !content) return AI_ERROR_INVALID_ARGUMENT;
+    try {
+        ai::memory::MemoryRecord rec;
+        rec.scope = scope;
+        rec.key = key ? key : "";
+        rec.content = content;
+        store->store.add(std::move(rec));
+        return AI_OK;
+    } catch (const std::exception& e) {
+        return AI_ERROR_INTERNAL;
+    }
+}
+
 const char* ai_sdk_version(void) {
     return "0.1.0";
 }
