@@ -6,8 +6,11 @@ from ai_sdk._native import (
     Model,
     ToolSet,
     Agent,
+    Session,
     generate_text,
     stream_text,
+    standard_toolkit,
+    with_permissions,
     version,
 )
 
@@ -17,8 +20,11 @@ __all__ = [
     "Model",
     "ToolSet",
     "Agent",
+    "Session",
     "generate_text",
     "stream_text",
+    "standard_toolkit",
+    "with_permissions",
     "create_anthropic",
     "create_openai",
     "create_google",

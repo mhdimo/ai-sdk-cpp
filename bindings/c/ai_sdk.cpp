@@ -700,6 +700,73 @@ void ai_batch_result_free(ai_batch_result_t* result) {
     }
 }
 
+// --- Session + standard toolkit + permissions -----------------------------
+
+struct ai_session {
+    ai::Session session;
+    ai_context* ctx;
+};
+
+ai_session_t ai_session_create(ai_agent_t agent) {
+    if (!agent) return nullptr;
+    return new ai_session{.session = ai::Session(agent->agent), .ctx = agent->ctx};
+}
+
+void ai_session_destroy(ai_session_t session) {
+    delete session;
+}
+
+ai_status_t ai_session_send(ai_session_t session, const char* prompt, ai_generate_result_t* result) {
+    if (!session || !prompt || !result) return AI_ERROR_INVALID_ARGUMENT;
+    auto* ctx = session->ctx;
+    try {
+        auto task = session->session.send(std::string(prompt));
+        task.start();
+        while (!task.done()) {
+            ctx->ioc.run_one();
+        }
+        auto r = task.get();
+        g_result_text = r.text;
+        switch (r.finish_reason) {
+        case ai::FinishReason::Stop: g_result_reason = "stop"; break;
+        case ai::FinishReason::Length: g_result_reason = "length"; break;
+        case ai::FinishReason::ToolCalls: g_result_reason = "tool_calls"; break;
+        default: g_result_reason = "other"; break;
+        }
+        result->text = g_result_text.c_str();
+        result->finish_reason = g_result_reason.c_str();
+        result->input_tokens = r.usage.input_tokens.total.value_or(0);
+        result->output_tokens = r.usage.output_tokens.total.value_or(0);
+        result->steps = static_cast<int>(r.steps.size());
+        return AI_OK;
+    } catch (const std::exception& e) {
+        return map_exception(ctx, e);
+    }
+}
+
+ai_tool_set_t ai_standard_toolkit_create(void) {
+    auto* ts = new ai_tool_set{};
+    ts->tools = ai::standard_toolkit();
+    return ts;
+}
+
+ai_tool_set_t ai_with_permissions(ai_tool_set_t tools, ai_permission_policy_fn policy, void* user_data) {
+    if (!tools || !policy) return nullptr;
+    auto* out = new ai_tool_set{};
+    ai::PermissionPolicy p = [policy, user_data](const std::string& tool,
+                                                  const boost::json::value& input) {
+        std::string input_str = boost::json::serialize(input);
+        int d = policy(tool.c_str(), input_str.c_str(), user_data);
+        switch (d) {
+        case AI_PERMISSION_ALLOW: return ai::PermissionDecision::Allow;
+        case AI_PERMISSION_DENY: return ai::PermissionDecision::Deny;
+        default: return ai::PermissionDecision::Ask;
+        }
+    };
+    out->tools = ai::with_permissions(std::move(tools->tools), p);
+    return out;
+}
+
 const char* ai_sdk_version(void) {
     return "0.1.0";
 }

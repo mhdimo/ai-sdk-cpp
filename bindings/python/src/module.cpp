@@ -23,16 +23,16 @@ static void check_status(ai_status_t status, ai_context_t ctx = nullptr) {
     }
 }
 
-class PyContext {
+class PyAiContext {
 public:
-    PyContext() : ctx_(ai_context_create()) {
+    PyAiContext() : ctx_(ai_context_create()) {
         if (!ctx_) throw std::runtime_error("Failed to create AI context");
     }
-    ~PyContext() { if (ctx_) ai_context_destroy(ctx_); }
+    ~PyAiContext() { if (ctx_) ai_context_destroy(ctx_); }
     ai_context_t handle() const { return ctx_; }
 
-    PyContext(const PyContext&) = delete;
-    PyContext& operator=(const PyContext&) = delete;
+    PyAiContext(const PyAiContext&) = delete;
+    PyAiContext& operator=(const PyAiContext&) = delete;
 
 private:
     ai_context_t ctx_;
@@ -40,7 +40,7 @@ private:
 
 class PyProvider {
 public:
-    PyProvider(PyContext& ctx, const std::string& name,
+    PyProvider(PyAiContext& ctx, const std::string& name,
               const std::string& api_key = "", const std::string& base_url = "")
         : ctx_(&ctx) {
         ai_provider_options_t opts = {};
@@ -56,7 +56,7 @@ public:
     PyProvider& operator=(const PyProvider&) = delete;
 
 private:
-    PyContext* ctx_;
+    PyAiContext* ctx_;
     ai_provider_t provider_;
 };
 
@@ -90,6 +90,15 @@ public:
     }
     ~PyToolSet() { if (tools_) ai_tool_set_destroy(tools_); }
     ai_tool_set_t handle() const { return tools_; }
+
+    /// Wrap an existing C toolset handle (e.g. from ai_standard_toolkit_create),
+    /// taking ownership.
+    static std::unique_ptr<PyToolSet> wrap(ai_tool_set_t h) {
+        auto ts = std::make_unique<PyToolSet>();  // constructs an empty handle
+        ai_tool_set_destroy(ts->tools_);
+        ts->tools_ = h;
+        return ts;
+    }
 
     void add(const std::string& name, const py::dict& schema,
              const std::string& description, py::function fn) {
@@ -175,6 +184,7 @@ public:
     }
 
     ~PyAgent() { if (agent_) ai_agent_destroy(agent_); }
+    ai_agent_t handle() const { return agent_; }
 
     PyGenerateResult call(const std::string& prompt) {
         ai_generate_result_t result = {};
@@ -335,14 +345,72 @@ static std::vector<PyStreamEvent> py_stream_text(
     return events;
 }
 
+class PySession {
+public:
+    PySession(PyAgent& agent) {
+        session_ = ai_session_create(agent.handle());
+        if (!session_) throw std::runtime_error("Failed to create session");
+    }
+    ~PySession() { if (session_) ai_session_destroy(session_); }
+
+    PyGenerateResult send(const std::string& prompt) {
+        ai_generate_result_t result = {};
+        ai_status_t status;
+        {
+            py::gil_scoped_release release;
+            status = ai_session_send(session_, prompt.c_str(), &result);
+        }
+        if (status != AI_OK) {
+            std::string msg = result.text ? result.text : ai_status_message(status);
+            ai_generate_result_free(&result);
+            throw std::runtime_error(msg);
+        }
+        PyGenerateResult res;
+        res.text = result.text ? result.text : "";
+        res.finish_reason = result.finish_reason ? result.finish_reason : "stop";
+        res.input_tokens = result.input_tokens;
+        res.output_tokens = result.output_tokens;
+        res.steps = result.steps;
+        ai_generate_result_free(&result);
+        return res;
+    }
+
+    PySession(const PySession&) = delete;
+    PySession& operator=(const PySession&) = delete;
+
+private:
+    ai_session_t session_;
+};
+
+static std::unique_ptr<PyToolSet> py_standard_toolkit() {
+    return PyToolSet::wrap(ai_standard_toolkit_create());
+}
+
+static std::unique_ptr<PyToolSet> py_with_permissions(PyToolSet& tools, py::function policy_fn) {
+    // policy_fn(tool: str, input_json: str) -> int  (0=allow, 1=deny, 2=ask)
+    // NOTE: the function is heap-allocated and kept alive for the toolset's
+    // lifetime (one allocation per call; not GC'd).
+    auto* fn = new py::function(std::move(policy_fn));
+    ai_permission_policy_fn c_fn = [](const char* tool, const char* input_json, void* ud) -> int {
+        auto* f = static_cast<py::function*>(ud);
+        py::gil_scoped_acquire acquire;
+        try {
+            return f->operator()(tool, input_json).cast<int>();
+        } catch (...) {
+            return AI_PERMISSION_DENY;  // fail closed
+        }
+    };
+    return PyToolSet::wrap(ai_with_permissions(tools.handle(), c_fn, fn));
+}
+
 PYBIND11_MODULE(_native, m) {
     m.doc() = "AI SDK C++ native bindings for Python";
 
-    py::class_<PyContext>(m, "Context")
+    py::class_<PyAiContext>(m, "Context")
         .def(py::init<>());
 
     py::class_<PyProvider>(m, "Provider")
-        .def(py::init<PyContext&, const std::string&, const std::string&, const std::string&>(),
+        .def(py::init<PyAiContext&, const std::string&, const std::string&, const std::string&>(),
              py::arg("ctx"), py::arg("name"),
              py::arg("api_key") = "", py::arg("base_url") = "")
         .def("model", [](PyProvider& self, const std::string& model_id) {
@@ -380,6 +448,16 @@ PYBIND11_MODULE(_native, m) {
              py::arg("instructions") = "", py::arg("max_steps") = 50)
         .def("call", &PyAgent::call)
         .def("call_stream", &PyAgent::call_stream);
+
+    py::class_<PySession>(m, "Session")
+        .def(py::init<PyAgent&>(), py::arg("agent"))
+        .def("send", &PySession::send, py::arg("prompt"));
+
+    m.def("standard_toolkit", &py_standard_toolkit,
+          "Returns a ToolSet with read_file/write_file/edit_file/glob/grep/bash.");
+    m.def("with_permissions", &py_with_permissions,
+          py::arg("tools"), py::arg("policy"),
+          "Wrap a ToolSet with a permission policy(policy)(tool, input_json) -> int (0=allow,1=deny,2=ask).");
 
     m.def("generate_text", &py_generate_text,
           py::arg("model"),

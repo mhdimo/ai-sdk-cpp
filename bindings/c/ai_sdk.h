@@ -204,6 +204,42 @@ ai_status_t ai_batch_run(
 void ai_batch_result_free(ai_batch_result_t* result);
 
 /* --------------------------------------------------------------------------
+ * Session — context-managed multi-turn conversation over an agent.
+ * -------------------------------------------------------------------------- */
+
+typedef struct ai_session* ai_session_t;
+
+/// Create a session that drives `agent` with sliding-window context management.
+ai_session_t ai_session_create(ai_agent_t agent);
+void ai_session_destroy(ai_session_t session);
+
+/// Send a user message through the session; appends the turn to history.
+/// Fills `result` with the assistant text + token usage.
+ai_status_t ai_session_send(ai_session_t session, const char* prompt, ai_generate_result_t* result);
+
+/* --------------------------------------------------------------------------
+ * Standard toolkit + permission gating
+ * -------------------------------------------------------------------------- */
+
+/// A ToolSet with read_file/write_file/edit_file/glob/grep/bash.
+ai_tool_set_t ai_standard_toolkit_create(void);
+
+/// Permission decision returned by a policy callback.
+enum {
+    AI_PERMISSION_ALLOW = 0,
+    AI_PERMISSION_DENY = 1,
+    AI_PERMISSION_ASK = 2,
+};
+
+/// Synchronous permission policy: inspect (tool, input_json) and return a
+/// decision. `user_data` is passed through from ai_with_permissions.
+typedef int (*ai_permission_policy_fn)(const char* tool, const char* input_json, void* user_data);
+
+/// Return a copy of `tools` where each execute is gated by `policy`.
+/// (Ask with no interactive approver fails closed -> Deny.)
+ai_tool_set_t ai_with_permissions(ai_tool_set_t tools, ai_permission_policy_fn policy, void* user_data);
+
+/* --------------------------------------------------------------------------
  * Utility
  * -------------------------------------------------------------------------- */
 
