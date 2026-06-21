@@ -22,23 +22,29 @@ public:
     std::string stream_body;  // returned by post_streaming (raw bytes)
     int post_json_calls = 0;
     int post_stream_calls = 0;
+    // Most recent request body each call saw, so tests can assert what the
+    // provider actually put on the wire (e.g. reasoning_effort, response_format).
+    boost::json::value last_request_body;
+    boost::json::value last_stream_request_body;
     boost::asio::io_context& ioc;
 
     explicit FakeHttpClient(boost::asio::io_context& ctx) : ioc(ctx) {}
 
     ai::Task<ai::http::HttpResponse> post_json(
-        std::string_view, const boost::json::value&, ai::http::Headers,
+        std::string_view, const boost::json::value& body, ai::http::Headers,
         ai::CancellationToken
     ) override {
         ++post_json_calls;
+        last_request_body = body;
         co_return ai::http::HttpResponse{200, {}, json_body};
     }
 
     ai::Task<ai::http::StreamingResponse> post_streaming(
-        std::string_view, const boost::json::value&, ai::http::Headers,
+        std::string_view, const boost::json::value& body, ai::http::Headers,
         ai::CancellationToken
     ) override {
         ++post_stream_calls;
+        last_stream_request_body = body;
         auto gen = [](std::string body) -> ai::AsyncGenerator<std::vector<uint8_t>> {
             std::vector<uint8_t> bytes(body.begin(), body.end());
             co_yield bytes;

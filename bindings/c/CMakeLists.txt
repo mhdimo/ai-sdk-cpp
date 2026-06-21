@@ -10,9 +10,7 @@ target_include_directories(ai-sdk-c PUBLIC
 target_link_libraries(ai-sdk-c PRIVATE ai-sdk-core)
 # Only link providers that are actually built (some may be disabled).
 foreach(pv
-    ai-sdk-openai ai-sdk-anthropic ai-sdk-google ai-sdk-deepseek ai-sdk-groq
-    ai-sdk-xai ai-sdk-mistral ai-sdk-fireworks ai-sdk-togetherai
-    ai-sdk-perplexity ai-sdk-cohere)
+    ai-sdk-openai ai-sdk-anthropic ai-sdk-google ai-sdk-deepseek ai-sdk-zai)
     if(TARGET ${pv})
         target_link_libraries(ai-sdk-c PRIVATE ${pv})
     endif()

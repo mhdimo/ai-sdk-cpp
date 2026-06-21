@@ -12,26 +12,8 @@
 #if defined(AI_SDK_PROVIDER_DEEPSEEK)
 #include <ai/providers/deepseek/deepseek.hpp>
 #endif
-#if defined(AI_SDK_PROVIDER_GROQ)
-#include <ai/providers/groq/groq.hpp>
-#endif
-#if defined(AI_SDK_PROVIDER_XAI)
-#include <ai/providers/xai/xai.hpp>
-#endif
-#if defined(AI_SDK_PROVIDER_MISTRAL)
-#include <ai/providers/mistral/mistral.hpp>
-#endif
-#if defined(AI_SDK_PROVIDER_FIREWORKS)
-#include <ai/providers/fireworks/fireworks.hpp>
-#endif
-#if defined(AI_SDK_PROVIDER_TOGETHERAI)
-#include <ai/providers/togetherai/togetherai.hpp>
-#endif
-#if defined(AI_SDK_PROVIDER_PERPLEXITY)
-#include <ai/providers/perplexity/perplexity.hpp>
-#endif
-#if defined(AI_SDK_PROVIDER_COHERE)
-#include <ai/providers/cohere/cohere.hpp>
+#if defined(AI_SDK_PROVIDER_ZAI)
+#include <ai/providers/zai/zai.hpp>
 #endif
 #include <boost/asio.hpp>
 #include <boost/json.hpp>
@@ -243,61 +225,25 @@ ai_provider_t ai_provider_create(ai_context_t ctx, const char* provider_name, ai
             if (opts.base_url) o.base_url = opts.base_url;
             provider = ai::providers::deepseek::create_deepseek(std::move(o));
         }
-#endif
-#if defined(AI_SDK_PROVIDER_GROQ)
-        if (!provider && name == "groq") {
-            ai::providers::groq::GroqOptions o{.io_context = ctx->ioc};
+        if (!provider && name == "deepseek-anthropic") {
+            ai::providers::deepseek::DeepSeekAnthropicOptions o{.io_context = ctx->ioc};
             if (api_key) o.api_key = *api_key;
             if (opts.base_url) o.base_url = opts.base_url;
-            provider = ai::providers::groq::create_groq(std::move(o));
+            provider = ai::providers::deepseek::create_deepseek_anthropic(std::move(o));
         }
 #endif
-#if defined(AI_SDK_PROVIDER_XAI)
-        if (!provider && name == "xai") {
-            ai::providers::xai::XAIOptions o{.io_context = ctx->ioc};
+#if defined(AI_SDK_PROVIDER_ZAI)
+        if (!provider && name == "zai") {
+            ai::providers::zai::ZaiOptions o{.io_context = ctx->ioc};
             if (api_key) o.api_key = *api_key;
             if (opts.base_url) o.base_url = opts.base_url;
-            provider = ai::providers::xai::create_xai(std::move(o));
+            provider = ai::providers::zai::create_zai(std::move(o));
         }
-#endif
-#if defined(AI_SDK_PROVIDER_MISTRAL)
-        if (!provider && name == "mistral") {
-            ai::providers::mistral::MistralOptions o{.io_context = ctx->ioc};
+        if (!provider && name == "zai-openai") {
+            ai::providers::zai::ZaiOpenAiOptions o{.io_context = ctx->ioc};
             if (api_key) o.api_key = *api_key;
             if (opts.base_url) o.base_url = opts.base_url;
-            provider = ai::providers::mistral::create_mistral(std::move(o));
-        }
-#endif
-#if defined(AI_SDK_PROVIDER_FIREWORKS)
-        if (!provider && name == "fireworks") {
-            ai::providers::fireworks::FireworksOptions o{.io_context = ctx->ioc};
-            if (api_key) o.api_key = *api_key;
-            if (opts.base_url) o.base_url = opts.base_url;
-            provider = ai::providers::fireworks::create_fireworks(std::move(o));
-        }
-#endif
-#if defined(AI_SDK_PROVIDER_TOGETHERAI)
-        if (!provider && name == "togetherai") {
-            ai::providers::togetherai::TogetherAIOptions o{.io_context = ctx->ioc};
-            if (api_key) o.api_key = *api_key;
-            if (opts.base_url) o.base_url = opts.base_url;
-            provider = ai::providers::togetherai::create_togetherai(std::move(o));
-        }
-#endif
-#if defined(AI_SDK_PROVIDER_PERPLEXITY)
-        if (!provider && name == "perplexity") {
-            ai::providers::perplexity::PerplexityOptions o{.io_context = ctx->ioc};
-            if (api_key) o.api_key = *api_key;
-            if (opts.base_url) o.base_url = opts.base_url;
-            provider = ai::providers::perplexity::create_perplexity(std::move(o));
-        }
-#endif
-#if defined(AI_SDK_PROVIDER_COHERE)
-        if (!provider && name == "cohere") {
-            ai::providers::cohere::CohereOptions o{.io_context = ctx->ioc};
-            if (api_key) o.api_key = *api_key;
-            if (opts.base_url) o.base_url = opts.base_url;
-            provider = ai::providers::cohere::create_cohere(std::move(o));
+            provider = ai::providers::zai::create_zai_openai(std::move(o));
         }
 #endif
         if (!provider) {

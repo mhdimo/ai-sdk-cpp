@@ -14,6 +14,14 @@ struct DeepSeekOptions {
     boost::asio::io_context& io_context;
 };
 
+// Anthropic-compatible DeepSeek endpoint (https://api.deepseek.com/anthropic).
+// Authenticated with x-api-key from DEEPSEEK_API_KEY.
+struct DeepSeekAnthropicOptions {
+    std::optional<std::string> api_key;
+    std::string base_url = "https://api.deepseek.com/anthropic";
+    boost::asio::io_context& io_context;
+};
+
 class DeepSeekProvider : public Provider {
 public:
     explicit DeepSeekProvider(DeepSeekOptions options);
@@ -26,5 +34,6 @@ private:
 };
 
 ProviderPtr create_deepseek(DeepSeekOptions options);
+ProviderPtr create_deepseek_anthropic(DeepSeekAnthropicOptions options);
 
 } // namespace ai::providers::deepseek

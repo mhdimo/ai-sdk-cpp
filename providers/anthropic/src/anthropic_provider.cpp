@@ -12,15 +12,21 @@ AnthropicProvider::AnthropicProvider(AnthropicOptions options)
     , http_client_(options_.http_client
         ? options_.http_client
         : std::make_shared<http::HttpClient>(options_.io_context)) {
+    // Bearer-token auth (options or ANTHROPIC_AUTH_TOKEN env). This is how
+    // Anthropic-compatible gateways such as z.ai / GLM authenticate when wired
+    // into Claude Code (ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL).
+    if (options_.auth_token) {
+        resolved_auth_token_ = *options_.auth_token;
+    } else {
+        const char* env_tok = std::getenv("ANTHROPIC_AUTH_TOKEN");
+        if (env_tok) resolved_auth_token_ = env_tok;
+    }
+    // API-key auth (options or ANTHROPIC_API_KEY env) — native Anthropic.
     if (options_.api_key) {
         resolved_api_key_ = *options_.api_key;
-    } else if (options_.auth_token) {
-        // auth_token mode - no api_key needed
     } else {
         const char* env_key = std::getenv("ANTHROPIC_API_KEY");
-        if (env_key) {
-            resolved_api_key_ = env_key;
-        }
+        if (env_key) resolved_api_key_ = env_key;
     }
 }
 
@@ -41,8 +47,18 @@ http::Headers AnthropicProvider::auth_headers() const {
     headers["anthropic-version"] = options_.api_version.value_or("2023-06-01");
     headers["content-type"] = "application/json";
 
-    if (options_.auth_token) {
-        headers["Authorization"] = "Bearer " + *options_.auth_token;
+    // Optional anthropic-beta features (comma-joined).
+    if (options_.anthropic_beta && !options_.anthropic_beta->empty()) {
+        std::string joined;
+        for (size_t i = 0; i < options_.anthropic_beta->size(); ++i) {
+            if (i) joined += ",";
+            joined += (*options_.anthropic_beta)[i];
+        }
+        headers["anthropic-beta"] = std::move(joined);
+    }
+
+    if (!resolved_auth_token_.empty()) {
+        headers["Authorization"] = "Bearer " + resolved_auth_token_;
     } else if (!resolved_api_key_.empty()) {
         headers["x-api-key"] = resolved_api_key_;
     }

@@ -83,6 +83,13 @@ bool is_reasoning_model(std::string_view model_id) {
     return false;
 }
 
+// Real OpenAI hosts (vs OpenAI-compatible gateways like DeepSeek/z.ai) differ in
+// what they accept. Used to gate Structured Outputs (json_schema) and
+// reasoning_effort, which real OpenAI rejects on non-reasoning SKUs.
+bool is_openai_host(std::string_view base_url) {
+    return base_url.find("openai.com") != std::string_view::npos;
+}
+
 } // namespace
 
 OpenAIChatLanguageModel::OpenAIChatLanguageModel(
@@ -97,26 +104,24 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
     boost::json::object body;
     body["model"] = model_id_;
 
-    bool reasoning = is_reasoning_model(model_id_);
+    // This heuristic governs OpenAI's *own* reasoning SKUs only: they take
+    // max_completion_tokens (not max_tokens), use the "developer" role, and
+    // reject sampling params. OpenAI-compatible reasoning models (DeepSeek v4,
+    // R1-style gateways, ...) intentionally fall through to the else branch:
+    // they use max_tokens + accept temperature/top_p. Reasoning *effort* is
+    // handled separately below, independent of this heuristic.
+    bool reasoning_model = is_reasoning_model(model_id_);
 
-    if (stream) body["stream"] = true;
+    if (stream) {
+        body["stream"] = true;
+        // Request a final usage chunk so streamed FinishPart.usage is populated
+        // (the trailing chunk carries usage with an empty choices array).
+        body["stream_options"] = boost::json::object{{"include_usage", true}};
+    }
 
-    // For reasoning models, use max_completion_tokens instead of max_tokens
-    // and don't send temperature/top_p/frequency_penalty/presence_penalty
-    if (reasoning) {
+    if (reasoning_model) {
         if (options.max_output_tokens) {
             body["max_completion_tokens"] = *options.max_output_tokens;
-        }
-        // Add reasoning_effort based on options.reasoning
-        if (options.reasoning) {
-            auto& level = *options.reasoning;
-            if (level == "low" || level == "minimal") {
-                body["reasoning_effort"] = "low";
-            } else if (level == "medium") {
-                body["reasoning_effort"] = "medium";
-            } else if (level == "high" || level == "xhigh") {
-                body["reasoning_effort"] = "high";
-            }
         }
     } else {
         if (options.max_output_tokens) body["max_tokens"] = *options.max_output_tokens;
@@ -124,6 +129,61 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
         if (options.top_p) body["top_p"] = *options.top_p;
         if (options.presence_penalty) body["presence_penalty"] = *options.presence_penalty;
         if (options.frequency_penalty) body["frequency_penalty"] = *options.frequency_penalty;
+    }
+
+    // Provider-specific overrides live under provider_options["openai"].
+    const boost::json::object* openai_po = nullptr;
+    if (auto po = options.provider_options.find("openai");
+        po != options.provider_options.end() && po->value().is_object()) {
+        openai_po = &po->value().as_object();
+    }
+
+    // Reasoning effort: emitted on explicit opt-in (options.reasoning != "none"),
+    // decoupled from the model heuristic above so OpenAI-compatible reasoning
+    // models (DeepSeek v4, etc.) honor it too. Our level vocabulary
+    // (minimal/low/medium/high/xhigh) matches the OpenAI enum verbatim; DeepSeek
+    // accepts the same strings (normalizing low/medium->high, xhigh->max), so a
+    // single mapping serves both. A raw provider_options.openai.reasoning_effort
+    // string overrides it (e.g. DeepSeek "max").
+    if (options.reasoning) {
+        const auto& level = *options.reasoning;
+        std::string effort;
+        if (level == "none") effort = "none";
+        else if (level == "minimal") effort = "minimal";
+        else if (level == "low") effort = "low";
+        else if (level == "medium") effort = "medium";
+        else if (level == "high") effort = "high";
+        else if (level == "xhigh" || level == "max") effort = "xhigh";
+        bool forced = false;
+        if (openai_po) {
+            if (auto re = openai_po->find("reasoning_effort");
+                re != openai_po->end() && re->value().is_string()) {
+                effort = std::string(re->value().as_string());
+                forced = true;
+            }
+        }
+        // Real OpenAI rejects reasoning_effort on non-reasoning SKUs (gpt-4o,
+        // gpt-4.1, gpt-5-chat) with a 400. Emit only when the model is a
+        // reasoning SKU, the host isn't OpenAI (DeepSeek/z.ai/etc. accept it),
+        // or the caller forced a raw value via provider_options.
+        if (!effort.empty()) {
+            const bool real_openai = is_openai_host(provider_->options().base_url);
+            if (reasoning_model || !real_openai || forced) {
+                body["reasoning_effort"] = std::move(effort);
+            }
+        }
+    }
+
+    // DeepSeek-style thinking toggle: opt-in only via
+    // provider_options.openai.thinking = "enabled"|"disabled". Never sent by
+    // default — OpenAI's Chat Completions endpoint would reject it.
+    if (openai_po) {
+        if (auto th = openai_po->find("thinking");
+            th != openai_po->end() && th->value().is_string()) {
+            body["thinking"] = boost::json::object{
+                {"type", std::string(th->value().as_string())}
+            };
+        }
     }
 
     if (options.seed) body["seed"] = *options.seed;
@@ -140,8 +200,8 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
         std::visit([&](auto&& m) {
             using T = std::decay_t<decltype(m)>;
             if constexpr (std::is_same_v<T, SystemMessage>) {
-                // For reasoning models, use "developer" role instead of "system"
-                std::string role = reasoning ? "developer" : "system";
+                // For OpenAI reasoning SKUs, use "developer" role instead of "system"
+                std::string role = reasoning_model ? "developer" : "system";
                 messages.push_back(boost::json::object{
                     {"role", role}, {"content", m.content}
                 });
@@ -273,19 +333,53 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
         }
     }
 
-    // Response format
+    // Response format. Real OpenAI supports json_schema (Structured Outputs);
+    // OpenAI-compatible gateways (DeepSeek, z.ai, ...) typically only support
+    // json_object, so emitting json_schema there hard-fails. Default to
+    // json_schema on OpenAI, json_object elsewhere, overridable via
+    // provider_options.openai.structured_output = json_schema|json_object|prompt.
     if (options.response_format && options.response_format->type == "json") {
-        if (options.response_format->schema) {
+        const bool real_openai = is_openai_host(provider_->options().base_url);
+        std::string mode = real_openai ? "json_schema" : "json_object";
+        if (openai_po) {
+            if (auto so = openai_po->find("structured_output");
+                so != openai_po->end() && so->value().is_string()) {
+                mode = std::string(so->value().as_string());
+            }
+        }
+        if (options.response_format->schema && mode == "json_schema") {
+            bool strict = true;
+            if (openai_po) {
+                if (auto st = openai_po->find("json_schema_strict");
+                    st != openai_po->end() && st->value().is_bool()) {
+                    strict = st->value().as_bool();
+                }
+            }
             body["response_format"] = boost::json::object{
                 {"type", "json_schema"},
                 {"json_schema", boost::json::object{
                     {"name", options.response_format->name.value_or("response")},
                     {"schema", options.response_format->schema->raw()},
-                    {"strict", true},
+                    {"strict", strict},
                 }},
             };
         } else {
+            // json_object / prompt mode: guarantees valid JSON. When a schema was
+            // requested but the host can't enforce it, also inject the schema
+            // into the prompt so the model has the shape to follow.
             body["response_format"] = boost::json::object{{"type", "json_object"}};
+            if (options.response_format->schema) {
+                std::string schema_str =
+                    boost::json::serialize(options.response_format->schema->raw());
+                std::string name = options.response_format->name.value_or("response");
+                std::string instr = "Respond with ONLY a single valid JSON object "
+                    "matching this schema (name=\"" + name + "\"). Output no text "
+                    "outside the JSON:\n" + schema_str;
+                boost::json::array& msgs = body.at("messages").as_array();
+                msgs.insert(msgs.begin(), boost::json::object{
+                    {"role", "system"}, {"content", std::move(instr)}
+                });
+            }
         }
     }
 
@@ -317,10 +411,31 @@ GenerateResult OpenAIChatLanguageModel::parse_response(const boost::json::value&
             if (msg_it != choice.end() && msg_it->value().is_object()) {
                 auto& msg = msg_it->value().as_object();
 
+                // Reasoning content: DeepSeek (thinking mode) and R1-style
+                // OpenAI-compatible models return the model's chain-of-thought
+                // here, before the final answer. Push it first so it precedes
+                // the text, matching stream order. OpenAI's own Chat
+                // Completions never sends this field, so this is a no-op there.
+                if (auto rc = msg.find("reasoning_content");
+                    rc != msg.end() && rc->value().is_string()) {
+                    auto text = std::string(rc->value().as_string());
+                    if (!text.empty()) {
+                        result.content.push_back(ReasoningContent{.text = std::move(text)});
+                    }
+                }
+
                 if (auto c = msg.find("content"); c != msg.end() && c->value().is_string()) {
                     result.content.push_back(TextContent{
                         .text = std::string(c->value().as_string())
                     });
+                }
+                // Refusal: when the model declines, content is empty and the
+                // reason is here. Surface it as text so it isn't silently lost.
+                if (auto rf = msg.find("refusal"); rf != msg.end() && rf->value().is_string()) {
+                    auto rtext = std::string(rf->value().as_string());
+                    if (!rtext.empty()) {
+                        result.content.push_back(TextContent{.text = std::move(rtext)});
+                    }
                 }
 
                 if (auto tc = msg.find("tool_calls"); tc != msg.end() && tc->value().is_array()) {
@@ -356,6 +471,20 @@ GenerateResult OpenAIChatLanguageModel::parse_response(const boost::json::value&
         }
         if (auto it = usage.find("completion_tokens"); it != usage.end()) {
             result.usage.output_tokens.total = static_cast<int>(it->value().as_int64());
+        }
+        if (auto ptd = usage.find("prompt_tokens_details");
+            ptd != usage.end() && ptd->value().is_object()) {
+            if (auto c = ptd->value().as_object().find("cached_tokens");
+                c != ptd->value().as_object().end()) {
+                result.usage.input_tokens.cache_read = static_cast<int>(c->value().as_int64());
+            }
+        }
+        if (auto ctd = usage.find("completion_tokens_details");
+            ctd != usage.end() && ctd->value().is_object()) {
+            if (auto r = ctd->value().as_object().find("reasoning_tokens");
+                r != ctd->value().as_object().end()) {
+                result.usage.output_tokens.reasoning = static_cast<int>(r->value().as_int64());
+            }
         }
     }
 
@@ -405,6 +534,7 @@ Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
         Usage usage{};
         FinishReason finish_reason = FinishReason::Stop;
         bool text_started = false;
+        bool reasoning_started = false;
         std::unordered_map<int, std::string> tool_call_ids;
         std::unordered_map<int, std::string> tool_call_names;
         std::unordered_map<int, bool> tool_call_started;
@@ -418,6 +548,28 @@ Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
             if (!parsed || !parsed->is_object()) continue;
 
             auto& obj = parsed->as_object();
+            // The final usage chunk carries usage with an empty choices array;
+            // capture it before the choices-empty early return (was dropped).
+            if (auto usage_it = obj.find("usage");
+                usage_it != obj.end() && usage_it->value().is_object()) {
+                auto& u = usage_it->value().as_object();
+                if (auto it = u.find("prompt_tokens"); it != u.end())
+                    usage.input_tokens.total = static_cast<int>(it->value().as_int64());
+                if (auto it = u.find("completion_tokens"); it != u.end())
+                    usage.output_tokens.total = static_cast<int>(it->value().as_int64());
+                if (auto ptd = u.find("prompt_tokens_details");
+                    ptd != u.end() && ptd->value().is_object()) {
+                    if (auto c = ptd->value().as_object().find("cached_tokens");
+                        c != ptd->value().as_object().end())
+                        usage.input_tokens.cache_read = static_cast<int>(c->value().as_int64());
+                }
+                if (auto ctd = u.find("completion_tokens_details");
+                    ctd != u.end() && ctd->value().is_object()) {
+                    if (auto r = ctd->value().as_object().find("reasoning_tokens");
+                        r != ctd->value().as_object().end())
+                        usage.output_tokens.reasoning = static_cast<int>(r->value().as_int64());
+                }
+            }
             auto choices_it = obj.find("choices");
             if (choices_it == obj.end() || !choices_it->value().is_array()) continue;
 
@@ -442,6 +594,12 @@ Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
             // Text content
             if (auto c = delta.find("content"); c != delta.end() && c->value().is_string()) {
                 if (!text_started) {
+                    // DeepSeek streams reasoning_content before content; close
+                    // the reasoning phase as the answer begins.
+                    if (reasoning_started) {
+                        co_yield StreamPart{ReasoningEnd{.id = "0"}};
+                        reasoning_started = false;
+                    }
                     co_yield StreamPart{TextStart{.id = "0"}};
                     text_started = true;
                 }
@@ -449,6 +607,24 @@ Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
                     .id = "0",
                     .delta = std::string(c->value().as_string()),
                 }};
+            }
+
+            // Reasoning content (DeepSeek thinking mode / R1-style models),
+            // streamed token-by-token before the final answer. OpenAI's own
+            // Chat Completions never emits this, so it's inert there.
+            if (auto rc = delta.find("reasoning_content");
+                rc != delta.end() && rc->value().is_string()) {
+                auto rtext = std::string(rc->value().as_string());
+                if (!rtext.empty()) {
+                    if (!reasoning_started) {
+                        co_yield StreamPart{ReasoningStart{.id = "0"}};
+                        reasoning_started = true;
+                    }
+                    co_yield StreamPart{ReasoningDelta{
+                        .id = "0",
+                        .delta = std::move(rtext),
+                    }};
+                }
             }
 
             // Tool calls
@@ -493,6 +669,10 @@ Task<StreamResult> OpenAIChatLanguageModel::do_stream(CallOptions options) {
             }
         }
 
+        if (reasoning_started) {
+            co_yield StreamPart{ReasoningEnd{.id = "0"}};
+            reasoning_started = false;
+        }
         if (text_started) {
             co_yield StreamPart{TextEnd{.id = "0"}};
         }

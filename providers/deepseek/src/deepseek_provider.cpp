@@ -1,5 +1,6 @@
 #include <ai/providers/deepseek/deepseek.hpp>
 #include <ai/providers/openai/openai.hpp>
+#include <ai/providers/anthropic/anthropic.hpp>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -30,6 +31,15 @@ LanguageModelPtr DeepSeekProvider::language_model(std::string_view model_id) {
 
 ProviderPtr create_deepseek(DeepSeekOptions options) {
     return std::make_shared<DeepSeekProvider>(std::move(options));
+}
+
+ProviderPtr create_deepseek_anthropic(DeepSeekAnthropicOptions options) {
+    anthropic::AnthropicOptions ao{
+        .api_key = resolve_api_key(options.api_key),
+        .base_url = options.base_url,
+        .io_context = options.io_context,
+    };
+    return anthropic::create_anthropic(std::move(ao));
 }
 
 } // namespace ai::providers::deepseek

@@ -59,8 +59,15 @@ CallOptions build_call_options(const StreamTextOptions& opts, const Prompt& prom
 }
 
 void append_assistant_message(Prompt& prompt, const std::string& text,
-                              const std::vector<ToolCallContent>& tool_calls) {
+                              const std::vector<ToolCallContent>& tool_calls,
+                              const std::vector<ReasoningContent>& reasoning = {}) {
     AssistantContent content;
+    for (auto& r : reasoning) {
+        ReasoningPart rp{.text = r.text};
+        rp.signature = r.signature;
+        rp.redacted_data = r.redacted_data;
+        content.push_back(std::move(rp));
+    }
     if (!text.empty()) {
         content.push_back(TextPart{.text = text});
     }
@@ -241,6 +248,11 @@ AsyncGenerator<StreamPart> stream_text_multi_step(
         // Consume the stream, accumulating text and tool calls
         std::string accumulated_text;
         std::vector<ToolCallContent> accumulated_tool_calls;
+        // Reasoning (Anthropic extended thinking / DeepSeek reasoning_content),
+        // accumulated so it can be re-emitted in the assistant turn for multi-turn.
+        std::string accumulated_reasoning;
+        std::optional<std::string> reasoning_signature;
+        std::optional<std::string> reasoning_redacted;
         FinishReason finish_reason = FinishReason::Stop;
         Usage step_usage{};
         std::vector<Warning> step_warnings;
@@ -274,6 +286,15 @@ AsyncGenerator<StreamPart> stream_text_multi_step(
                     accumulated_tool_calls.push_back(std::move(it->second));
                     pending_tool_calls.erase(it);
                 }
+            } else if (std::get_if<ReasoningStart>(&part)) {
+                accumulated_reasoning.clear();
+                reasoning_signature.reset();
+                reasoning_redacted.reset();
+            } else if (auto* rd = std::get_if<ReasoningDelta>(&part)) {
+                accumulated_reasoning += rd->delta;
+            } else if (auto* re = std::get_if<ReasoningEnd>(&part)) {
+                if (re->signature) reasoning_signature = re->signature;
+                if (re->redacted_data) reasoning_redacted = re->redacted_data;
             } else if (auto* finish = std::get_if<FinishPart>(&part)) {
                 finish_reason = finish->reason;
                 step_usage = finish->usage;
@@ -289,6 +310,12 @@ AsyncGenerator<StreamPart> stream_text_multi_step(
 
         // Build result for this step
         std::vector<Content> content;
+        if (!accumulated_reasoning.empty() || reasoning_redacted) {
+            ReasoningContent rc{.text = accumulated_reasoning};
+            rc.signature = reasoning_signature;
+            rc.redacted_data = reasoning_redacted;
+            content.push_back(std::move(rc));
+        }
         if (!accumulated_text.empty()) {
             content.push_back(TextContent{.text = accumulated_text});
         }
@@ -308,7 +335,16 @@ AsyncGenerator<StreamPart> stream_text_multi_step(
         // If finished with tool calls, execute them and continue
         if (finish_reason == FinishReason::ToolCalls && !accumulated_tool_calls.empty()
             && !options.tools.empty()) {
-            append_assistant_message(prompt, accumulated_text, accumulated_tool_calls);
+            // Re-emit reasoning (with signature/redacted) in the assistant turn
+            // so multi-turn thinking tool loops keep their context.
+            std::vector<ReasoningContent> reasoning;
+            if (!accumulated_reasoning.empty() || reasoning_redacted) {
+                ReasoningContent rc{.text = accumulated_reasoning};
+                rc.signature = reasoning_signature;
+                rc.redacted_data = reasoning_redacted;
+                reasoning.push_back(std::move(rc));
+            }
+            append_assistant_message(prompt, accumulated_text, accumulated_tool_calls, reasoning);
 
             step_tool_results = co_await execute_tools(
                 accumulated_tool_calls, options.tools, prompt, options.cancel

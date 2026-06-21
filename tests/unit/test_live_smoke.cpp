@@ -11,7 +11,12 @@
 
 #include <ai/coding_agent.hpp>
 #include <ai/providers/anthropic/anthropic.hpp>
+#include <ai/providers/openai/openai.hpp>
+#include <ai/providers/zai/zai.hpp>
+#include <ai/providers/moonshotai/moonshotai.hpp>
 #include <ai/mcp/mcp_client.hpp>
+#include <ai/model/call_options.hpp>
+#include <ai/prompt/message.hpp>
 #include <boost/json.hpp>
 
 #include <boost/asio.hpp>
@@ -70,6 +75,44 @@ TEST_CASE("CodingAgent end-to-end against a live provider", "[live][smoke]") {
     std::cout << "[live] usage: "
               << result.usage.input_tokens.total.value_or(0) << " in / "
               << result.usage.output_tokens.total.value_or(0) << " out\n";
+}
+
+TEST_CASE("OpenAI provider surfaces DeepSeek reasoning_content live", "[live][deepseek]") {
+    if (!live_enabled()) {
+        SKIP("set AI_SDK_RUN_LIVE=1 and DEEPSEEK_API_KEY to run the live DeepSeek test");
+    }
+    const char* key = std::getenv("DEEPSEEK_API_KEY");
+    if (!key || !*key) {
+        SKIP("set DEEPSEEK_API_KEY for the live DeepSeek reasoning test");
+    }
+
+    boost::asio::io_context ioc;
+    std::string base = env_or("DEEPSEEK_BASE_URL", "https://api.deepseek.com");
+    auto provider = ai::providers::openai::create_openai(
+        ai::providers::openai::OpenAIOptions{
+            .api_key = std::string(key),
+            .base_url = base,
+            .io_context = ioc,
+        });
+    std::string model_id = env_or("DEEPSEEK_MODEL", "deepseek-reasoner");
+    auto model = provider->language_model(model_id);
+
+    ai::CallOptions co;
+    ai::UserContent uc;
+    uc.push_back(ai::TextPart{.text = "What is 7 * 13? Show your work."});
+    co.prompt.push_back(ai::UserMessage{.content = std::move(uc)});
+
+    auto result = run(model->do_generate(std::move(co)), ioc);
+
+    REQUIRE_FALSE(result.text().empty());
+    bool has_reasoning = false;
+    for (auto& c : result.content) {
+        if (std::get_if<ai::ReasoningContent>(&c)) has_reasoning = true;
+    }
+    std::cout << "[live] DeepSeek " << model_id << " replied: " << result.text() << "\n";
+    std::cout << "[live] reasoning_content surfaced: " << (has_reasoning ? "yes" : "no") << "\n";
+    std::cout << "[live] usage: " << result.usage.input_tokens.total.value_or(0)
+              << " in / " << result.usage.output_tokens.total.value_or(0) << " out\n";
 }
 
 TEST_CASE("MCP client against a real streamable-HTTP server (zread)", "[live][mcp]") {
@@ -143,4 +186,81 @@ TEST_CASE("MCP stdio client against a real subprocess server", "[live][mcp][stdi
         std::cout << "[live stdio]   - " << t.name << "\n";
     }
     REQUIRE(!tools.empty());
+}
+
+// z.ai GLM via the first-class zai wrapper. The [1m] Claude-Code alias must be
+// stripped (else [1211] Unknown Model); auth is Bearer via ZAI_API_KEY.
+TEST_CASE("zai provider strips [1m] alias and reaches GLM", "[live][zai]") {
+    if (!live_enabled()) SKIP("set AI_SDK_RUN_LIVE=1 and ZAI_API_KEY");
+    const char* key = std::getenv("ZAI_API_KEY");
+    if (!key || !*key) SKIP("set ZAI_API_KEY for the live zai test");
+
+    boost::asio::io_context ioc;
+    auto provider = ai::providers::zai::create_zai(
+        ai::providers::zai::ZaiOptions{.io_context = ioc});
+    // [1m] alias — the zai provider must strip it to glm-5.2.
+    auto model = provider->language_model("glm-5.2[1m]");
+
+    ai::CallOptions co;
+    ai::UserContent uc;
+    uc.push_back(ai::TextPart{.text = "Reply with exactly one word: pong"});
+    co.prompt.push_back(ai::UserMessage{.content = std::move(uc)});
+
+    auto result = run(model->do_generate(std::move(co)), ioc);
+    REQUIRE_FALSE(result.text().empty());
+    std::cout << "[live] zai glm-5.2[1m] -> " << result.text() << "\n";
+}
+
+// DeepSeek has no json_schema support; the SDK auto-downgrades to json_object +
+// prompt-injected schema. The model must still return valid JSON.
+TEST_CASE("DeepSeek structured output downgrades to json_object", "[live][deepseek]") {
+    if (!live_enabled()) SKIP("set AI_SDK_RUN_LIVE=1 and DEEPSEEK_API_KEY");
+    const char* key = std::getenv("DEEPSEEK_API_KEY");
+    if (!key || !*key) SKIP("set DEEPSEEK_API_KEY");
+
+    boost::asio::io_context ioc;
+    std::string base = env_or("DEEPSEEK_BASE_URL", "https://api.deepseek.com");
+    auto provider = ai::providers::openai::create_openai(
+        ai::providers::openai::OpenAIOptions{
+            .api_key = std::string(key), .base_url = base, .io_context = ioc});
+    auto model = provider->language_model(env_or("DEEPSEEK_MODEL", "deepseek-v4-flash"));
+
+    ai::CallOptions co;
+    ai::UserContent uc;
+    uc.push_back(ai::TextPart{.text = "Pick a small integer for n."});
+    co.prompt.push_back(ai::UserMessage{.content = std::move(uc)});
+    co.response_format = ai::ResponseFormat{
+        .type = "json",
+        .schema = ai::schema::JsonSchema::object({{"n", ai::schema::JsonSchema::integer()}}).required({"n"}),
+        .name = std::string("num"),
+    };
+
+    auto result = run(model->do_generate(std::move(co)), ioc);
+    auto parsed = boost::json::parse(result.text());
+    REQUIRE(parsed.as_object().contains("n"));
+    std::cout << "[live] DeepSeek structured -> " << result.text() << "\n";
+}
+
+// Moonshot (Kimi) via the OpenAI-compatible wrapper — same code path as
+// OpenAI/DeepSeek, so this also exercises reasoning_content surfacing etc.
+TEST_CASE("Moonshot (Kimi) via OpenAI-compatible wrapper", "[live][moonshot]") {
+    if (!live_enabled()) SKIP("set AI_SDK_RUN_LIVE=1 and MOONSHOT_API_KEY");
+    const char* key = std::getenv("MOONSHOT_API_KEY");
+    if (!key || !*key) SKIP("set MOONSHOT_API_KEY");
+
+    boost::asio::io_context ioc;
+    ai::providers::moonshotai::MoonshotAIOptions o{.io_context = ioc};
+    std::string base = env_or("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1");
+    if (!base.empty()) o.base_url = base;
+    auto provider = ai::providers::moonshotai::create_moonshotai(std::move(o));
+    auto model = provider->language_model(env_or("MOONSHOT_MODEL", "kimi-k2.6"));
+
+    ai::CallOptions co;
+    ai::UserContent uc;
+    uc.push_back(ai::TextPart{.text = "Reply with exactly one word: pong"});
+    co.prompt.push_back(ai::UserMessage{.content = std::move(uc)});
+
+    auto result = run(model->do_generate(std::move(co)), ioc);
+    REQUIRE_FALSE(result.text().empty());
+    std::cout << "[live] moonshot replied: " << result.text() << "\n";
 }

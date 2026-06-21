@@ -23,6 +23,9 @@ public:
     // Public to allow unit-testing structured-output / request construction.
     boost::json::value build_request_body(const CallOptions& options, bool stream);
 
+    // Pure parse of an Anthropic Messages response. Public for unit testing.
+    GenerateResult parse_response(const boost::json::value& response);
+
 private:
     std::string model_id_;
     std::shared_ptr<AnthropicProvider> provider_;
@@ -30,7 +33,6 @@ private:
     boost::json::array convert_tools(const std::vector<FunctionTool>& tools);
     boost::json::value convert_tool_choice(const std::optional<ToolChoice>& choice);
 
-    GenerateResult parse_response(const boost::json::value& response);
     std::vector<StreamPart> parse_stream_chunk(const boost::json::value& chunk);
 
     int default_max_tokens() const;

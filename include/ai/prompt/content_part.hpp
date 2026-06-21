@@ -43,6 +43,8 @@ struct FilePart {
 
 struct ReasoningPart {
     std::string text;
+    std::optional<std::string> signature;
+    std::optional<std::string> redacted_data;
     ProviderOptions provider_options;
 };
 

@@ -24,6 +24,9 @@ struct AnthropicOptions {
     std::optional<std::string> auth_token;
     std::string base_url = "https://api.anthropic.com";
     std::optional<std::string> api_version;
+    // Optional anthropic-beta features (e.g. "interleaved-thinking-2025-05-14"),
+    // joined into the anthropic-beta header.
+    std::optional<std::vector<std::string>> anthropic_beta;
     boost::asio::io_context& io_context;
     std::optional<std::function<http::Headers()>> extra_headers;
     // Optional injected client (used by tests to avoid real network). When null,
@@ -49,6 +52,7 @@ private:
     AnthropicOptions options_;
     std::shared_ptr<http::IHttpClient> http_client_;
     std::string resolved_api_key_;
+    std::string resolved_auth_token_;
 };
 
 ProviderPtr create_anthropic(AnthropicOptions options);

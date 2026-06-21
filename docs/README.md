@@ -4,7 +4,7 @@ A high-performance C++20 AI agent framework.
 
 Like **llama.cpp** is to inference, **ai-sdk-cpp** is to agent orchestration. One native engine, any language.
 
-- **13 providers** — Anthropic, OpenAI, Google, Amazon Bedrock, DeepSeek, Groq, xAI, Mistral, Fireworks, Together AI, Perplexity, Cohere, MoonshotAI
+- **6 providers** — Anthropic, OpenAI, Google, Amazon Bedrock, DeepSeek, MoonshotAI (plus z.ai/GLM via the OpenAI/Anthropic endpoints). See [providers.md](providers.md) for the full compatibility matrix.
 - **Automatic tool loops** — define tools, the agent calls them until the task is done
 - **Streaming** — SSE parsing, token-by-token output, backpressure
 - **Multi-language** — C++, Python, TypeScript/Node.js, and C — or any language via the shared C FFI
@@ -22,7 +22,7 @@ Like **llama.cpp** is to inference, **ai-sdk-cpp** is to agent orchestration. On
 ├─────────────────────────────────────────────────────────┤
 │  Core      (generate_text · stream_text · Agent loop)   │
 ├─────────┬────────┬────────┬────────┬────────┬───────────┤
-│Anthropic│ OpenAI │ Google │  Groq  │  xAI   │ 8 more…   │
+│Anthropic│ OpenAI │ Google │ Bedrock│DeepSeek│ MoonshotAI│
 ├─────────┴────────┴────────┴────────┴────────┴───────────┤
 │  HTTP/TLS (Boost.Beast) + SSE Parser + WebSocket        │
 └─────────────────────────────────────────────────────────┘
@@ -103,21 +103,14 @@ int main(void) {
 
 | Provider | Factory | Env Var |
 |----------|---------|---------|
-| Anthropic | `create_anthropic` | `ANTHROPIC_API_KEY` |
+| Anthropic | `create_anthropic` | `ANTHROPIC_API_KEY` (`ANTHROPIC_AUTH_TOKEN` for Bearer) |
 | OpenAI | `create_openai` | `OPENAI_API_KEY` |
 | Google | `create_google` | `GOOGLE_API_KEY` |
 | Amazon Bedrock | `create_bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
-| Groq | `create_groq` | `GROQ_API_KEY` |
-| xAI | `create_xai` | `XAI_API_KEY` |
-| Mistral | `create_mistral` | `MISTRAL_API_KEY` |
-| Fireworks | `create_fireworks` | `FIREWORKS_API_KEY` |
-| Together AI | `create_togetherai` | `TOGETHER_API_KEY` |
-| Perplexity | `create_perplexity` | `PERPLEXITY_API_KEY` |
-| Cohere | `create_cohere` | `COHERE_API_KEY` |
 | DeepSeek | `create_deepseek` | `DEEPSEEK_API_KEY` |
 | MoonshotAI | `create_moonshotai` | `MOONSHOT_API_KEY` |
 
-All providers share the same interface. Switch models with a one-line change.
+All providers share the same interface. Switch models with a one-line change. For the full provider × protocol compatibility matrix (including z.ai/GLM and DeepSeek's dual endpoints), see [providers.md](providers.md).
 
 ---
 

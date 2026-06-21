@@ -38,7 +38,10 @@ Prompt extract_turn_messages(const GenerateTextResult& result) {
                         content.push_back(TextPart{.text = text->text});
                     }
                 } else if (auto* reasoning = std::get_if<ReasoningContent>(&c)) {
-                    content.push_back(ReasoningPart{.text = reasoning->text});
+                    ReasoningPart rp{.text = reasoning->text};
+                    rp.signature = reasoning->signature;
+                    rp.redacted_data = reasoning->redacted_data;
+                    content.push_back(std::move(rp));
                 } else if (auto* tc = std::get_if<ToolCallContent>(&c)) {
                     content.push_back(ToolCallPart{
                         .tool_call_id = tc->tool_call_id,

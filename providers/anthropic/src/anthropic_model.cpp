@@ -68,15 +68,36 @@ boost::json::value AnthropicLanguageModel::build_request_body(
         body["stop_sequences"] = std::move(stops);
     }
 
-    // Thinking/Reasoning controls
-    if (options.reasoning && *options.reasoning != "none") {
+    // Thinking/Reasoning controls. A raw provider_options.anthropic.thinking
+    // object wins (lets callers drive adaptive thinking on Opus 4.6+/Sonnet
+    // 4.6: {type:adaptive, effort:...} or {type:enabled, budget_tokens, display}).
+    // Otherwise map the abstract reasoning level to enabled + budget_tokens.
+    bool has_thinking_override = false;
+    if (auto po = options.provider_options.find("anthropic");
+        po != options.provider_options.end() && po->value().is_object()) {
+        auto& ao = po->value().as_object();
+        if (auto th = ao.find("thinking"); th != ao.end()) {
+            body["thinking"] = th->value();
+            has_thinking_override = true;
+        }
+    }
+    if (!has_thinking_override && options.reasoning && *options.reasoning != "none") {
         int budget = reasoning_to_budget(*options.reasoning);
         if (budget > 0) {
+            // budget_tokens must be < max_tokens (else 400) and >= 1024.
+            int max_tok = options.max_output_tokens.value_or(default_max_tokens());
+            if (budget >= max_tok) budget = (max_tok > 1024) ? (max_tok - 1) : 1024;
+            if (budget < 1024) budget = 1024;
             body["thinking"] = boost::json::object{
                 {"type", "enabled"},
                 {"budget_tokens", budget}
             };
         }
+    }
+
+    // metadata.user_id (abuse monitoring / user attribution)
+    if (options.user_id) {
+        body["metadata"] = boost::json::object{{"user_id", *options.user_id}};
     }
 
     // Convert messages
@@ -172,6 +193,22 @@ boost::json::value AnthropicLanguageModel::build_request_body(
                             block["input"] = p.input;
                             maybe_add_cache_control(block, p.provider_options);
                             content.push_back(std::move(block));
+                        } else if constexpr (std::is_same_v<P, ReasoningPart>) {
+                            // Echo thinking (with signature) / redacted_thinking back
+                            // unchanged — required for multi-turn tool use with
+                            // extended thinking (else the API 400s on modified blocks).
+                            if (p.redacted_data) {
+                                boost::json::object block;
+                                block["type"] = "redacted_thinking";
+                                block["data"] = *p.redacted_data;
+                                content.push_back(std::move(block));
+                            } else {
+                                boost::json::object block;
+                                block["type"] = "thinking";
+                                block["thinking"] = p.text;
+                                if (p.signature) block["signature"] = *p.signature;
+                                content.push_back(std::move(block));
+                            }
                         }
                     }, part);
                 }
@@ -299,6 +336,8 @@ boost::json::value AnthropicLanguageModel::build_request_body(
                     body["tool_choice"] = boost::json::object{
                         {"type", "tool"}, {"name", tc.tool_name}
                     };
+                } else if constexpr (std::is_same_v<TC, ToolChoiceNone>) {
+                    body["tool_choice"] = boost::json::object{{"type", "none"}};
                 }
             }, *options.tool_choice);
         }
@@ -365,12 +404,28 @@ GenerateResult AnthropicLanguageModel::parse_response(const boost::json::value& 
                     });
                 }
             } else if (type == "thinking") {
-                auto thinking_it = block_obj.find("thinking");
-                if (thinking_it != block_obj.end() && thinking_it->value().is_string()) {
-                    result.content.push_back(ReasoningContent{
-                        .text = std::string(thinking_it->value().as_string())
-                    });
+                std::string text;
+                if (auto thinking_it = block_obj.find("thinking");
+                    thinking_it != block_obj.end() && thinking_it->value().is_string()) {
+                    text = std::string(thinking_it->value().as_string());
                 }
+                std::optional<std::string> signature;
+                if (auto sig_it = block_obj.find("signature");
+                    sig_it != block_obj.end() && sig_it->value().is_string()) {
+                    signature = std::string(sig_it->value().as_string());
+                }
+                result.content.push_back(ReasoningContent{
+                    .text = std::move(text), .signature = std::move(signature)
+                });
+            } else if (type == "redacted_thinking") {
+                // Safety-redacted thinking: opaque blob that must be echoed back
+                // unchanged in subsequent turns (no text/signature).
+                std::optional<std::string> data;
+                if (auto data_it = block_obj.find("data");
+                    data_it != block_obj.end() && data_it->value().is_string()) {
+                    data = std::string(data_it->value().as_string());
+                }
+                result.content.push_back(ReasoningContent{.redacted_data = std::move(data)});
             }
         }
     }
@@ -381,12 +436,14 @@ GenerateResult AnthropicLanguageModel::parse_response(const boost::json::value& 
         auto reason = std::string(stop_reason_it->value().as_string());
         if (reason == "end_turn" || reason == "stop_sequence") {
             result.finish_reason = FinishReason::Stop;
-        } else if (reason == "max_tokens") {
+        } else if (reason == "max_tokens" || reason == "model_context_window_exceeded") {
             result.finish_reason = FinishReason::Length;
         } else if (reason == "tool_use") {
             result.finish_reason = FinishReason::ToolCalls;
+        } else if (reason == "refusal") {
+            result.finish_reason = FinishReason::ContentFilter;
         } else {
-            result.finish_reason = FinishReason::Other;
+            result.finish_reason = FinishReason::Other;  // pause_turn, etc.
         }
     }
 
@@ -405,6 +462,14 @@ GenerateResult AnthropicLanguageModel::parse_response(const boost::json::value& 
         }
         if (auto it = usage.find("cache_creation_input_tokens"); it != usage.end() && !it->value().is_null()) {
             result.usage.input_tokens.cache_write = static_cast<int>(it->value().as_int64());
+        }
+        // output_tokens_details.thinking_tokens (reasoning cost), when present.
+        if (auto otd = usage.find("output_tokens_details");
+            otd != usage.end() && otd->value().is_object()) {
+            if (auto t = otd->value().as_object().find("thinking_tokens");
+                t != otd->value().as_object().end()) {
+                result.usage.output_tokens.reasoning = static_cast<int>(t->value().as_int64());
+            }
         }
     }
 
@@ -487,6 +552,8 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
         std::string current_tool_name;
         bool in_text = false;
         bool in_tool_input = false;
+        bool in_thinking = false;
+        std::string current_signature;
 
         while (auto event = co_await events.next()) {
             if (event->data == "[DONE]") continue;
@@ -557,7 +624,19 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                             }};
                         }
                     } else if (block_type == "thinking") {
+                        in_thinking = true;
+                        current_signature.clear();
                         co_yield StreamPart{ReasoningStart{.id = "0"}};
+                    } else if (block_type == "redacted_thinking") {
+                        // Redacted thinking arrives complete (no deltas): emit a
+                        // Start/End pair carrying the opaque data for round-trip.
+                        std::optional<std::string> data;
+                        if (auto d_it = block.find("data");
+                            d_it != block.end() && d_it->value().is_string()) {
+                            data = std::string(d_it->value().as_string());
+                        }
+                        co_yield StreamPart{ReasoningStart{.id = "0"}};
+                        co_yield StreamPart{ReasoningEnd{.id = "0", .redacted_data = std::move(data)}};
                     }
                 }
             } else if (type == "content_block_delta") {
@@ -591,6 +670,13 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                         if (th_it != delta.end() && th_it->value().is_string()) {
                             co_yield StreamPart{ReasoningDelta{.id = "0", .delta = std::string(th_it->value().as_string())}};
                         }
+                    } else if (delta_type == "signature_delta") {
+                        // Thinking signature, streamed just before content_block_stop;
+                        // accumulate and attach to the closing ReasoningEnd.
+                        auto sig_it = delta.find("signature");
+                        if (sig_it != delta.end() && sig_it->value().is_string()) {
+                            current_signature += std::string(sig_it->value().as_string());
+                        }
                     }
                 }
             } else if (type == "content_block_stop") {
@@ -600,9 +686,14 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                 } else if (in_tool_input) {
                     co_yield StreamPart{ToolInputEnd{.id = current_tool_id}};
                     in_tool_input = false;
-                } else {
-                    co_yield StreamPart{ReasoningEnd{.id = "0"}};
+                } else if (in_thinking) {
+                    std::optional<std::string> sig;
+                    if (!current_signature.empty()) sig = current_signature;
+                    co_yield StreamPart{ReasoningEnd{.id = "0", .signature = std::move(sig)}};
+                    in_thinking = false;
+                    current_signature.clear();
                 }
+                // redacted_thinking already emitted its Start/End at block_start.
             } else if (type == "message_delta") {
                 auto delta_it = obj.find("delta");
                 if (delta_it != obj.end() && delta_it->value().is_object()) {
@@ -611,10 +702,14 @@ Task<StreamResult> AnthropicLanguageModel::do_stream(CallOptions options) {
                         auto reason = std::string(sr->value().as_string());
                         if (reason == "end_turn" || reason == "stop_sequence")
                             finish_reason = FinishReason::Stop;
-                        else if (reason == "max_tokens")
+                        else if (reason == "max_tokens" || reason == "model_context_window_exceeded")
                             finish_reason = FinishReason::Length;
                         else if (reason == "tool_use")
                             finish_reason = FinishReason::ToolCalls;
+                        else if (reason == "refusal")
+                            finish_reason = FinishReason::ContentFilter;
+                        else if (!reason.empty())
+                            finish_reason = FinishReason::Other;  // pause_turn, etc.
                     }
                 }
                 auto usage_delta_it = obj.find("usage");

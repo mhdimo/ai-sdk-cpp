@@ -46,6 +46,9 @@ struct CallOptions {
 
     std::optional<std::string> reasoning;
 
+    // Provider-mapped user id (Anthropic metadata.user_id, OpenAI `user`).
+    std::optional<std::string> user_id;
+
     std::unordered_map<std::string, std::string> headers;
     CancellationToken cancel;
     bool include_raw_chunks = false;

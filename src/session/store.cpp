@@ -109,7 +109,10 @@ boost::json::value serialize_message(const Message& msg) {
                     if (auto* t = std::get_if<TextPart>(&p)) {
                         parts.push_back(boost::json::object{{"type", "text"}, {"text", t->text}});
                     } else if (auto* r = std::get_if<ReasoningPart>(&p)) {
-                        parts.push_back(boost::json::object{{"type", "reasoning"}, {"text", r->text}});
+                        boost::json::object rp{{"type", "reasoning"}, {"text", r->text}};
+                        if (r->signature) rp["signature"] = *r->signature;
+                        if (r->redacted_data) rp["redacted_data"] = *r->redacted_data;
+                        parts.push_back(std::move(rp));
                     } else if (auto* tc = std::get_if<ToolCallPart>(&p)) {
                         parts.push_back(boost::json::object{
                             {"type", "tool_call"},
@@ -169,7 +172,12 @@ Message deserialize_message(const boost::json::value& v) {
             if (type == "text") {
                 c.push_back(TextPart{.text = str_at(po, "text")});
             } else if (type == "reasoning") {
-                c.push_back(ReasoningPart{.text = str_at(po, "text")});
+                ReasoningPart rp{.text = str_at(po, "text")};
+                if (auto s = po.find("signature"); s != po.end() && s->value().is_string())
+                    rp.signature = std::string(s->value().as_string());
+                if (auto d = po.find("redacted_data"); d != po.end() && d->value().is_string())
+                    rp.redacted_data = std::string(d->value().as_string());
+                c.push_back(std::move(rp));
             } else if (type == "tool_call") {
                 ToolCallPart tc;
                 tc.tool_call_id = str_at(po, "id");

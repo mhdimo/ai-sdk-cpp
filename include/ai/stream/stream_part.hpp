@@ -79,6 +79,8 @@ struct ReasoningDelta {
 
 struct ReasoningEnd {
     std::string id;
+    std::optional<std::string> signature;
+    std::optional<std::string> redacted_data;
 };
 
 struct ToolInputStart {

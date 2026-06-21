@@ -7,4 +7,4 @@ target_include_directories(ai-sdk-deepseek PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(ai-sdk-deepseek PUBLIC ai-sdk-core ai-sdk-openai)
+target_link_libraries(ai-sdk-deepseek PUBLIC ai-sdk-core ai-sdk-openai ai-sdk-anthropic)

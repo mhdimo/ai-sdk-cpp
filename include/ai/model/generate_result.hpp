@@ -16,6 +16,11 @@ struct TextContent {
 
 struct ReasoningContent {
     std::string text;
+    // Anthropic extended-thinking signature; required to round-trip thinking
+    // blocks across multi-turn tool use. Empty for providers that don't emit it.
+    std::optional<std::string> signature;
+    // Anthropic redacted_thinking opaque blob; must be echoed back unchanged.
+    std::optional<std::string> redacted_data;
 };
 
 struct ToolCallContent {

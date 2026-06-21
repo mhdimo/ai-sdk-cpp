@@ -4,7 +4,7 @@ A C++20 framework for building AI-powered applications. The orchestration layer 
 
 ## Features
 
-- **Multi-provider support** — Anthropic, OpenAI, Google, Amazon Bedrock, DeepSeek, Groq, xAI, Mistral, Fireworks, Together AI, Perplexity, Cohere, MoonshotAI
+- **Multi-provider support** — Anthropic, OpenAI, Google, Amazon Bedrock, DeepSeek, MoonshotAI (plus z.ai/GLM via the OpenAI/Anthropic endpoints). See [docs/providers.md](docs/providers.md) for the full provider × protocol compatibility matrix.
 - **Agentic tool loops** — Define tools with JSON schemas, let the model call them in a loop until task completion
 - **Streaming** — SSE-based streaming with async generators
 - **Structured output** — Generate validated JSON objects against a schema
@@ -175,14 +175,9 @@ Thin wrappers that delegate to the OpenAI provider with a different base URL and
 | Provider | Import |
 |---|---|
 | DeepSeek | `#include <ai/providers/deepseek/deepseek.hpp>` |
-| Groq | `#include <ai/providers/groq/groq.hpp>` |
-| xAI (Grok) | `#include <ai/providers/xai/xai.hpp>` |
-| Mistral | `#include <ai/providers/mistral/mistral.hpp>` |
-| Fireworks | `#include <ai/providers/fireworks/fireworks.hpp>` |
-| Together AI | `#include <ai/providers/togetherai/togetherai.hpp>` |
-| Perplexity | `#include <ai/providers/perplexity/perplexity.hpp>` |
 | MoonshotAI | `#include <ai/providers/moonshotai/moonshotai.hpp>` |
-| Cohere | `#include <ai/providers/cohere/cohere.hpp>` (chat delegates to OpenAI; also exposes a native `rerank()` endpoint) |
+
+For any other OpenAI-compatible host (z.ai, self-hosted vLLM, etc.), use the generic OpenAI-compatible provider with a custom `base_url`: `#include <ai/providers/openai_compatible/openai_compatible.hpp>`. See [docs/providers.md](docs/providers.md) for details on z.ai/GLM, DeepSeek endpoints, and the compatibility matrix.
 
 ## Configuration
 
@@ -208,13 +203,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
 export GOOGLE_API_KEY="..."
 export DEEPSEEK_API_KEY="..."
-export GROQ_API_KEY="..."
-export XAI_API_KEY="..."
-export MISTRAL_API_KEY="..."
-export FIREWORKS_API_KEY="..."
-export TOGETHERAI_API_KEY="..."
-export PERPLEXITY_API_KEY="..."
-export COHERE_API_KEY="..."
+export MOONSHOT_API_KEY="..."
 ```
 
 ## Testing

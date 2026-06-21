@@ -263,3 +263,95 @@ data: {"type":"message_stop"}
     REQUIRE(parsed.as_object().at("answer").as_string() == "42");
     REQUIRE(parsed.as_object().at("count").as_int64() == 7);
 }
+
+// ---------------------------------------------------------------------------
+// Thinking signature + redacted_thinking round-trip (extended thinking).
+// ---------------------------------------------------------------------------
+TEST_CASE("Anthropic round-trips thinking signature + redacted_thinking", "[anthropic][reasoning]") {
+    AnthropicEnv env;
+
+    SECTION("parse_response captures signature") {
+        auto resp = boost::json::parse(
+            R"({"content":[{"type":"thinking","thinking":"hm","signature":"sig123"},)"
+            R"({"type":"text","text":"answer"}],)"
+            R"("stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}})");
+        auto result = env.model.parse_response(resp);
+        REQUIRE(result.content.size() == 2);
+        auto* r = std::get_if<ai::ReasoningContent>(&result.content[0]);
+        REQUIRE(r != nullptr);
+        REQUIRE(r->text == "hm");
+        REQUIRE(r->signature.value_or("") == "sig123");
+    }
+
+    SECTION("parse_response captures redacted_thinking") {
+        auto resp = boost::json::parse(
+            R"({"content":[{"type":"redacted_thinking","data":"opaque"},)"
+            R"({"type":"text","text":"answer"}],)"
+            R"("stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}})");
+        auto result = env.model.parse_response(resp);
+        auto* r = std::get_if<ai::ReasoningContent>(&result.content[0]);
+        REQUIRE(r != nullptr);
+        REQUIRE(r->redacted_data.value_or("") == "opaque");
+    }
+
+    SECTION("build_request_body re-emits thinking+signature and redacted_thinking") {
+        auto build_with = [&](ai::AssistantContent ac) -> boost::json::array {
+            ai::Prompt p;
+            p.push_back(ai::AssistantMessage{.content = std::move(ac)});
+            ai::CallOptions co;
+            co.prompt = p;
+            return env.model.build_request_body(co, false)
+                .as_object().at("messages").as_array()[0]
+                .as_object().at("content").as_array();
+        };
+
+        ai::AssistantContent ac1;
+        ac1.push_back(ai::ReasoningPart{.text = "hm", .signature = std::string("sig123")});
+        auto c1 = build_with(std::move(ac1));
+        REQUIRE(c1[0].as_object().at("type").as_string() == "thinking");
+        REQUIRE(c1[0].as_object().at("signature").as_string() == "sig123");
+
+        ai::AssistantContent ac2;
+        ac2.push_back(ai::ReasoningPart{.redacted_data = std::string("opaque")});
+        auto c2 = build_with(std::move(ac2));
+        REQUIRE(c2[0].as_object().at("type").as_string() == "redacted_thinking");
+        REQUIRE(c2[0].as_object().at("data").as_string() == "opaque");
+    }
+}
+
+TEST_CASE("Anthropic stop_reason / tool_choice:none / metadata", "[anthropic][reasoning]") {
+    AnthropicEnv env;
+
+    SECTION("stop_reason refusal -> ContentFilter, pause_turn -> Other") {
+        auto mk = [&](const char* reason) {
+            auto resp = boost::json::parse(
+                std::string(R"({"content":[{"type":"text","text":"x"}],"stop_reason":")")
+                + reason + R"(","usage":{"input_tokens":1,"output_tokens":1}})");
+            return env.model.parse_response(resp).finish_reason;
+        };
+        REQUIRE(mk("refusal") == ai::FinishReason::ContentFilter);
+        REQUIRE(mk("pause_turn") == ai::FinishReason::Other);
+        REQUIRE(mk("tool_use") == ai::FinishReason::ToolCalls);
+    }
+
+    SECTION("tool_choice none emitted") {
+        ai::CallOptions co;
+        ai::UserContent uc;
+        uc.push_back(ai::TextPart{.text = "hi"});
+        co.prompt.push_back(ai::UserMessage{.content = std::move(uc)});
+        co.tools.push_back(ai::FunctionTool{.name = "t", .input_schema = ai::schema::JsonSchema::object({})});
+        co.tool_choice = ai::ToolChoiceNone{};
+        auto body = env.model.build_request_body(co, false);
+        REQUIRE(body.as_object().at("tool_choice").as_object().at("type").as_string() == "none");
+    }
+
+    SECTION("metadata.user_id emitted") {
+        ai::CallOptions co;
+        ai::UserContent uc;
+        uc.push_back(ai::TextPart{.text = "hi"});
+        co.prompt.push_back(ai::UserMessage{.content = std::move(uc)});
+        co.user_id = std::string("user-42");
+        auto body = env.model.build_request_body(co, false);
+        REQUIRE(body.as_object().at("metadata").as_object().at("user_id").as_string() == "user-42");
+    }
+}

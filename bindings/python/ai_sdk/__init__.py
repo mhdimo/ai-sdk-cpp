@@ -28,14 +28,10 @@ __all__ = [
     "create_anthropic",
     "create_openai",
     "create_google",
-    "create_groq",
-    "create_xai",
-    "create_mistral",
-    "create_fireworks",
-    "create_togetherai",
-    "create_perplexity",
-    "create_cohere",
     "create_deepseek",
+    "create_zai",
+    "create_deepseek_anthropic",
+    "create_zai_openai",
     "tool",
     "version",
 ]
@@ -58,29 +54,17 @@ def create_openai(api_key=None, base_url=None):
 def create_google(api_key=None, base_url=None):
     return Provider(_get_ctx(), "google", api_key=api_key, base_url=base_url)
 
-def create_groq(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "groq", api_key=api_key, base_url=base_url)
-
-def create_xai(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "xai", api_key=api_key, base_url=base_url)
-
-def create_mistral(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "mistral", api_key=api_key, base_url=base_url)
-
-def create_fireworks(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "fireworks", api_key=api_key, base_url=base_url)
-
-def create_togetherai(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "togetherai", api_key=api_key, base_url=base_url)
-
-def create_perplexity(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "perplexity", api_key=api_key, base_url=base_url)
-
-def create_cohere(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "cohere", api_key=api_key, base_url=base_url)
-
 def create_deepseek(api_key=None, base_url=None):
     return Provider(_get_ctx(), "deepseek", api_key=api_key, base_url=base_url)
+
+def create_zai(api_key=None, base_url=None):
+    return Provider(_get_ctx(), "zai", api_key=api_key, base_url=base_url)
+
+def create_deepseek_anthropic(api_key=None, base_url=None):
+    return Provider(_get_ctx(), "deepseek-anthropic", api_key=api_key, base_url=base_url)
+
+def create_zai_openai(api_key=None, base_url=None):
+    return Provider(_get_ctx(), "zai-openai", api_key=api_key, base_url=base_url)
 
 def tool(name, schema, description=""):
     """Decorator to register a function as a tool."""
