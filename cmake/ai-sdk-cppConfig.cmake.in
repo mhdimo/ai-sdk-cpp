@@ -3,7 +3,7 @@
 # ai-sdk-cpp package config. Resolves the SDK's public dependencies, then loads
 # the exported targets (core, C API, and any providers that were built).
 include(CMakeFindDependencyMacro)
-find_dependency(Boost 1.82 COMPONENTS json)
+find_dependency(Boost 1.82)
 find_dependency(OpenSSL)
 find_dependency(Threads)
 

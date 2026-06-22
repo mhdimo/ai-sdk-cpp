@@ -32,7 +32,7 @@ foreach(pv IN ITEMS
     endif()
 endforeach()
 
-find_package(Boost 1.82 REQUIRED COMPONENTS json)
+find_package(Boost 1.82 REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -84,6 +84,7 @@ set(AI_SDK_CORE_SOURCES
     src/core/generate_speech.cpp
     src/core/transcribe.cpp
     src/core/rerank.cpp
+    src/core/boost_json_src.cpp
 )
 
 if(AI_SDK_BUILD_STATIC)
@@ -94,7 +95,6 @@ if(AI_SDK_BUILD_STATIC)
         $<INSTALL_INTERFACE:include>
     )
     target_link_libraries(ai-sdk-core-static PUBLIC
-        Boost::json
         Boost::headers
         OpenSSL::SSL OpenSSL::Crypto
         Threads::Threads
@@ -103,10 +103,6 @@ if(AI_SDK_BUILD_STATIC)
         $<$<CXX_COMPILER_ID:GNU>:-fcoroutines>
         $<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>
     )
-    # Boost.JSON's compiled-vs-header-only link mode is inconsistent across
-    # distros (Linux libboost-all-dev leaves non-inline symbols unresolved at
-    # link time; macOS brew links fine). Force header-only everywhere.
-    target_compile_definitions(ai-sdk-core-static PUBLIC BOOST_JSON_HEADER_ONLY)
 endif()
 
 if(AI_SDK_BUILD_SHARED)
@@ -117,7 +113,6 @@ if(AI_SDK_BUILD_SHARED)
         $<INSTALL_INTERFACE:include>
     )
     target_link_libraries(ai-sdk-core-shared PUBLIC
-        Boost::json
         Boost::headers
         OpenSSL::SSL OpenSSL::Crypto
         Threads::Threads
@@ -126,7 +121,6 @@ if(AI_SDK_BUILD_SHARED)
         $<$<CXX_COMPILER_ID:GNU>:-fcoroutines>
         $<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>
     )
-    target_compile_definitions(ai-sdk-core-shared PUBLIC BOOST_JSON_HEADER_ONLY)
     target_compile_definitions(ai-sdk-core-shared PRIVATE AI_SDK_EXPORTS)
 endif()
 
