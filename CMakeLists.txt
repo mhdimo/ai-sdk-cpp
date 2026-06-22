@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Build all targets position-independent so the static core/providers can be
+# linked into the shared C binding (libai_sdk.so). Required on Linux; harmless
+# elsewhere. Without this, TLS relocations (e.g. boost::asio) fail when linking
+# a non-PIC static archive into a shared object.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(AI_SDK_BUILD_SHARED "Build shared library" ON)
 option(AI_SDK_BUILD_STATIC "Build static library" ON)
