@@ -103,6 +103,10 @@ if(AI_SDK_BUILD_STATIC)
         $<$<CXX_COMPILER_ID:GNU>:-fcoroutines>
         $<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>
     )
+    # Boost.JSON's compiled-vs-header-only link mode is inconsistent across
+    # distros (Linux libboost-all-dev leaves non-inline symbols unresolved at
+    # link time; macOS brew links fine). Force header-only everywhere.
+    target_compile_definitions(ai-sdk-core-static PUBLIC BOOST_JSON_HEADER_ONLY)
 endif()
 
 if(AI_SDK_BUILD_SHARED)
@@ -122,6 +126,7 @@ if(AI_SDK_BUILD_SHARED)
         $<$<CXX_COMPILER_ID:GNU>:-fcoroutines>
         $<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>
     )
+    target_compile_definitions(ai-sdk-core-shared PUBLIC BOOST_JSON_HEADER_ONLY)
     target_compile_definitions(ai-sdk-core-shared PRIVATE AI_SDK_EXPORTS)
 endif()
 
