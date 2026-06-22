@@ -375,6 +375,50 @@ public:
         return res;
     }
 
+    void send_stream(const std::string& prompt, py::function callback) {
+        struct CallbackData {
+            py::function callback;
+        };
+        CallbackData data{callback};
+
+        ai_stream_callback_fn cb = [](ai_stream_event_t event, void* user_data) {
+            auto* d = static_cast<CallbackData*>(user_data);
+            py::gil_scoped_acquire acquire;
+            try {
+                PyStreamEvent e;
+                switch (event.type) {
+                    case AI_STREAM_TEXT_DELTA: e.type = "text_delta"; break;
+                    case AI_STREAM_TOOL_CALL_START: e.type = "tool_call_start"; break;
+                    case AI_STREAM_TOOL_CALL_DELTA: e.type = "tool_call_delta"; break;
+                    case AI_STREAM_TOOL_CALL_END: e.type = "tool_call_end"; break;
+                    case AI_STREAM_FINISH: e.type = "finish"; break;
+                    case AI_STREAM_ERROR: e.type = "error"; break;
+                    case AI_STREAM_STEP_FINISH: e.type = "step_finish"; break;
+                    case AI_STREAM_REASONING_START: e.type = "reasoning_start"; break;
+                    case AI_STREAM_REASONING_DELTA: e.type = "reasoning_delta"; break;
+                    case AI_STREAM_REASONING_END: e.type = "reasoning_end"; break;
+                    case AI_STREAM_TOOL_RESULT: e.type = "tool_result"; break;
+                }
+                if (event.text) e.text = event.text;
+                if (event.tool_name) e.tool_name = event.tool_name;
+                if (event.tool_call_id) e.tool_call_id = event.tool_call_id;
+                d->callback(e);
+            } catch (...) {
+                // Ignore exceptions
+            }
+        };
+
+        ai_status_t status;
+        {
+            py::gil_scoped_release release;
+            status = ai_session_send_stream(session_, prompt.c_str(), cb, &data);
+        }
+
+        if (status != AI_OK) {
+            throw std::runtime_error("Session streaming send failed");
+        }
+    }
+
     PySession(const PySession&) = delete;
     PySession& operator=(const PySession&) = delete;
 
@@ -451,7 +495,8 @@ PYBIND11_MODULE(_native, m) {
 
     py::class_<PySession>(m, "Session")
         .def(py::init<PyAgent&>(), py::arg("agent"))
-        .def("send", &PySession::send, py::arg("prompt"));
+        .def("send", &PySession::send, py::arg("prompt"))
+        .def("send_stream", &PySession::send_stream, py::arg("prompt"), py::arg("callback"));
 
     m.def("standard_toolkit", &py_standard_toolkit,
           "Returns a ToolSet with read_file/write_file/edit_file/glob/grep/bash.");

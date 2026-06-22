@@ -46,25 +46,25 @@ def _get_ctx():
     return _ctx
 
 def create_anthropic(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "anthropic", api_key=api_key, base_url=base_url)
+    return Provider(_get_ctx(), "anthropic", api_key=api_key or "", base_url=base_url or "")
 
 def create_openai(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "openai", api_key=api_key, base_url=base_url)
+    return Provider(_get_ctx(), "openai", api_key=api_key or "", base_url=base_url or "")
 
 def create_google(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "google", api_key=api_key, base_url=base_url)
+    return Provider(_get_ctx(), "google", api_key=api_key or "", base_url=base_url or "")
 
 def create_deepseek(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "deepseek", api_key=api_key, base_url=base_url)
+    return Provider(_get_ctx(), "deepseek", api_key=api_key or "", base_url=base_url or "")
 
 def create_zai(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "zai", api_key=api_key, base_url=base_url)
+    return Provider(_get_ctx(), "zai", api_key=api_key or "", base_url=base_url or "")
 
 def create_deepseek_anthropic(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "deepseek-anthropic", api_key=api_key, base_url=base_url)
+    return Provider(_get_ctx(), "deepseek-anthropic", api_key=api_key or "", base_url=base_url or "")
 
 def create_zai_openai(api_key=None, base_url=None):
-    return Provider(_get_ctx(), "zai-openai", api_key=api_key, base_url=base_url)
+    return Provider(_get_ctx(), "zai-openai", api_key=api_key or "", base_url=base_url or "")
 
 def tool(name, schema, description=""):
     """Decorator to register a function as a tool."""

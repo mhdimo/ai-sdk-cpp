@@ -126,6 +126,13 @@ static ai_status_t consume_stream_to_callback(
                     case ai::FinishReason::ToolCalls: event.finish_reason = "tool_calls"; break;
                     default: event.finish_reason = "other"; break;
                     }
+                } else if constexpr (std::is_same_v<T, ai::ReasoningStart>) {
+                    event.type = AI_STREAM_REASONING_START;
+                } else if constexpr (std::is_same_v<T, ai::ReasoningDelta>) {
+                    event.type = AI_STREAM_REASONING_DELTA;
+                    event.text = p.delta.c_str();
+                } else if constexpr (std::is_same_v<T, ai::ReasoningEnd>) {
+                    event.type = AI_STREAM_REASONING_END;
                 } else if constexpr (std::is_same_v<T, ai::ErrorPart>) {
                     // Surface as a hard error so the call returns a non-OK status;
                     // the catch below emits the single AI_STREAM_ERROR event.
@@ -689,6 +696,134 @@ ai_status_t ai_session_send(ai_session_t session, const char* prompt, ai_generat
         return map_exception(ctx, e);
     }
 }
+
+static void append_turn_messages(ai::Session& session, const ai::GenerateTextResult& result) {
+    ai::Prompt delta;
+
+    for (const auto& step : result.steps) {
+        const auto& res = step.result;
+        const auto tool_calls_content = res.tool_calls();
+        if (!tool_calls_content.empty()) {
+            ai::AssistantContent content;
+            for (auto& c : res.content) {
+                if (auto* text = std::get_if<ai::TextContent>(&c)) {
+                    if (!text->text.empty()) {
+                        content.push_back(ai::TextPart{.text = text->text});
+                    }
+                } else if (auto* reasoning = std::get_if<ai::ReasoningContent>(&c)) {
+                    ai::ReasoningPart rp{.text = reasoning->text};
+                    rp.signature = reasoning->signature;
+                    rp.redacted_data = reasoning->redacted_data;
+                    content.push_back(std::move(rp));
+                } else if (auto* tc = std::get_if<ai::ToolCallContent>(&c)) {
+                    content.push_back(ai::ToolCallPart{
+                        .tool_call_id = tc->tool_call_id,
+                        .tool_name = tc->tool_name,
+                        .input = ai::json::safe_parse(tc->input)
+                                     .value_or(boost::json::value(tc->input)),
+                    });
+                }
+            }
+            if (!content.empty()) {
+                delta.push_back(ai::AssistantMessage{.content = std::move(content)});
+            }
+
+            ai::ToolContent tc_content;
+            for (auto& r : step.tool_results) {
+                ai::ToolResultOutput output = r.is_error
+                    ? ai::ToolResultOutput{ai::ErrorJsonOutput{.value = r.output}}
+                    : ai::ToolResultOutput{ai::JsonOutput{.value = r.output}};
+                tc_content.push_back(ai::ToolResultPart{
+                    .tool_call_id = r.tool_call_id,
+                    .tool_name = r.tool_name,
+                    .output = std::move(output),
+                });
+            }
+            if (!tc_content.empty()) {
+                delta.push_back(ai::ToolMessage{.content = std::move(tc_content)});
+            }
+        }
+    }
+
+    bool ends_with_assistant_text = false;
+    if (!delta.empty()) {
+        if (auto* asst = std::get_if<ai::AssistantMessage>(&delta.back())) {
+            for (auto& part : asst->content) {
+                if (auto* t = std::get_if<ai::TextPart>(&part)) {
+                    if (!t->text.empty()) {
+                        ends_with_assistant_text = true;
+                    }
+                }
+            }
+        }
+    }
+    if (!ends_with_assistant_text && !result.text.empty()) {
+        ai::AssistantContent content;
+        content.push_back(ai::TextPart{.text = result.text});
+        delta.push_back(ai::AssistantMessage{.content = std::move(content)});
+    }
+
+    auto snapshot = session.snapshot();
+    for (auto& m : delta) {
+        snapshot.history.push_back(std::move(m));
+    }
+    session.restore(std::move(snapshot));
+}
+
+ai_status_t ai_session_send_stream(
+    ai_session_t session,
+    const char* prompt,
+    ai_stream_callback_fn callback,
+    void* user_data
+) {
+    if (!session || !prompt || !callback) return AI_ERROR_INVALID_ARGUMENT;
+    auto* ctx = session->ctx;
+
+    try {
+        auto outer = session->session.send_stream(std::string(prompt));
+        outer.start();
+        while (!outer.done()) {
+            ctx->ioc.run_one();
+        }
+        auto result = outer.get();
+
+        auto status = consume_stream_to_callback(
+            std::move(result.stream), ctx->ioc, callback, user_data, ctx);
+        if (status != AI_OK) return status;
+
+        auto full_result_task = std::move(result.full_result);
+        full_result_task.start();
+        while (!full_result_task.done()) {
+            ctx->ioc.run_one();
+        }
+        auto gen_result = full_result_task.get();
+
+        // Dispatch executed tool results to callback
+        for (const auto& step : gen_result.steps) {
+            for (const auto& tr : step.tool_results) {
+                std::string output_str;
+                if (tr.output.is_string()) {
+                    output_str = tr.output.as_string();
+                } else {
+                    output_str = boost::json::serialize(tr.output);
+                }
+                ai_stream_event_t event{};
+                event.type = AI_STREAM_TOOL_RESULT;
+                event.tool_name = tr.tool_name.c_str();
+                event.tool_call_id = tr.tool_call_id.c_str();
+                event.text = output_str.c_str();
+                callback(event, user_data);
+            }
+        }
+
+        append_turn_messages(session->session, gen_result);
+
+        return AI_OK;
+    } catch (const std::exception& e) {
+        return map_exception(ctx, e);
+    }
+}
+
 
 ai_tool_set_t ai_standard_toolkit_create(void) {
     auto* ts = new ai_tool_set{};

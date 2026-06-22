@@ -29,7 +29,7 @@ class GenerateResult:
     steps: int
 
 class StreamEvent:
-    type: str  # "text_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "finish", "error"
+    type: str  # "text_delta", "tool_call_start", "tool_call_delta", "tool_call_end", "finish", "error", "reasoning_start", "reasoning_delta", "reasoning_end", "tool_result"
     text: Optional[str]
     tool_name: Optional[str]
     tool_call_id: Optional[str]
@@ -63,3 +63,8 @@ def stream_text(
 ) -> Generator[StreamEvent, None, None]: ...
 
 def version() -> str: ...
+
+class Session:
+    def __init__(self, agent: Agent) -> None: ...
+    def send(self, prompt: str) -> GenerateResult: ...
+    def send_stream(self, prompt: str, callback: Callable[[StreamEvent], None]) -> None: ...

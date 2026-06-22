@@ -127,6 +127,10 @@ typedef enum {
     AI_STREAM_FINISH = 4,
     AI_STREAM_ERROR = 5,
     AI_STREAM_STEP_FINISH = 6,
+    AI_STREAM_REASONING_START = 7,
+    AI_STREAM_REASONING_DELTA = 8,
+    AI_STREAM_REASONING_END = 9,
+    AI_STREAM_TOOL_RESULT = 10,
 } ai_stream_event_type_t;
 
 typedef struct {
@@ -216,6 +220,10 @@ void ai_session_destroy(ai_session_t session);
 /// Send a user message through the session; appends the turn to history.
 /// Fills `result` with the assistant text + token usage.
 ai_status_t ai_session_send(ai_session_t session, const char* prompt, ai_generate_result_t* result);
+
+/// Streaming variant of session send. Drives the stream and automatically
+/// appends the resulting assistant response & tool metrics back into the session history.
+ai_status_t ai_session_send_stream(ai_session_t session, const char* prompt, ai_stream_callback_fn callback, void* user_data);
 
 /* --------------------------------------------------------------------------
  * Standard toolkit + permission gating
