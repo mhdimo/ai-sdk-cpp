@@ -23,3 +23,9 @@ compile_commands.json
 # macOS
 .DS_Store
 build_py/
+
+# Python
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo

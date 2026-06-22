@@ -5,6 +5,10 @@ All notable changes to ai-sdk-cpp. Format loosely based on
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.0] - 2026-06-22
+
 ### Added — native agent capabilities
 - **Session & context management** (`include/ai/session/`): `Session` holds
   conversation history across turns and applies a pluggable `ContextStrategy` —
@@ -41,6 +45,22 @@ All notable changes to ai-sdk-cpp. Format loosely based on
   `CONTRIBUTING.md`, `SECURITY.md`. CI workflow (`.github/workflows/ci.yml`).
   Gated live smoke test (`tests/unit/test_live_smoke.cpp`).
 
+### Added — provider parity & packaging
+- **z.ai (GLM)** provider (Anthropic-compatible; strips the `[1m]` Claude-Code
+  alias that the API rejects) + **DeepSeek Anthropic** and **z.ai OpenAI**
+  endpoints. See `docs/providers.md` for the provider × protocol matrix.
+- **`find_package(ai-sdk-cpp 0.1.0)`**: CMake package config exports the core
+  library, C API, and every provider that was built as `ai-sdk-cpp::*` targets.
+- **OpenAI**: streaming token usage (`stream_options.include_usage`),
+  `reasoning_content` surfacing (DeepSeek/R1-style), `json_schema`→`json_object`
+  auto-downgrade on non-OpenAI hosts, `refusal`, reasoning-effort guard.
+- **Anthropic**: extended-thinking `signature` + `redacted_thinking` round-trip
+  for multi-turn tool loops; `pause_turn`/`refusal`/`model_context_window_exceeded`
+  stop reasons; `tool_choice:none`; `budget_tokens` validation; `metadata.user_id`;
+  `anthropic-beta` header; adaptive-thinking override.
+- **Session streaming** in the C API + Python binding (`ai_session_send_stream`),
+  with `reasoning_*` and `tool_result` stream events.
+
 ### Fixed
 - **`AsyncGenerator` handshake**: `yield_value` returned `suspend_always` and
   never resumed the consumer — every `co_await gen.next()` loop deadlocked
@@ -65,13 +85,18 @@ All notable changes to ai-sdk-cpp. Format loosely based on
 - `generate_video` placeholder header (shipped in public API, did nothing).
 
 ### Tests
-- 33 → 82+ offline unit tests across streaming, batch, session, context
-  strategies, permissions, toolkit, persistence, memory, the facade, and
-  Anthropic/OpenAI/Google provider parsing.
+- 105 offline unit tests across streaming, batch, session, context strategies,
+  permissions, toolkit, persistence, memory, the facade, MCP, embeddings/rerank,
+  and OpenAI/Anthropic reasoning + structured-output parsing. Live-verified
+  paths: OpenAI, Anthropic, DeepSeek, z.ai, Moonshot, Bedrock.
 
-### Known gaps (not in this release)
-- MCP: only `tools/list` + `tools/call`, no transport seam for offline tests,
-  missing resources/prompts/sampling/progress/streamable-HTTP.
-- Rust/Go bindings: still DIY-FFI (no in-repo packages).
-- Python/Node bindings do not yet cover Session/permissions/toolkit/memory.
-- Not yet verified against live provider APIs (offline suite only).
+### Notes & known limitations
+- **Providers**: OpenAI, Anthropic, DeepSeek, z.ai (GLM), MoonshotAI, Amazon
+  Bedrock, Google. **Google** compiles but is not yet live-verified — treat as
+  experimental. The 7 minor OpenAI-compatible wrappers (Groq, xAI, Mistral,
+  Fireworks, TogetherAI, Perplexity, Cohere) were removed; use the generic
+  OpenAI-compatible provider or the OpenAI provider with a custom `base_url`.
+- **Bindings** (Python/Node/Go/Rust) wrap the C API and ship as a **preview** —
+  build from source. Registry publication (PyPI/npm/crates) is deferred.
+- Extended-thinking signature round-trip is unit-tested but not yet exercised
+  against a live Claude extended-thinking tool loop.

@@ -186,3 +186,41 @@ if(AI_SDK_BUILD_SHARED)
     )
 endif()
 install(DIRECTORY include/ai DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+# --- find_package(ai-sdk-cpp) support -------------------------------------
+# Export every provider that was actually built (into the AiSdkTargets export
+# set, namespace ai-sdk-cpp::) and install its headers into the merged
+# include/ai tree so consumers can use the full C++ API after find_package.
+include(CMakePackageConfigHelpers)
+set(_ai_sdk_provider_libs
+    ai-sdk-openai ai-sdk-anthropic ai-sdk-google ai-sdk-deepseek
+    ai-sdk-moonshotai ai-sdk-bedrock ai-sdk-zai ai-sdk-openai-compatible)
+foreach(_lib IN LISTS _ai_sdk_provider_libs)
+    if(TARGET ${_lib})
+        install(TARGETS ${_lib}
+            EXPORT AiSdkTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+        string(REPLACE "ai-sdk-" "" _prov ${_lib})
+        install(DIRECTORY providers/${_prov}/include/ai
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    endif()
+endforeach()
+
+install(EXPORT AiSdkTargets
+    NAMESPACE ai-sdk-cpp::
+    FILE ai-sdk-cppTargets.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ai-sdk-cpp)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ai-sdk-cppConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cppConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ai-sdk-cpp)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cppConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion)
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cppConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/ai-sdk-cppConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ai-sdk-cpp)

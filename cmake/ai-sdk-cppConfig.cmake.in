@@ -1,0 +1,22 @@
+@PACKAGE_INIT@
+
+# ai-sdk-cpp package config. Resolves the SDK's public dependencies, then loads
+# the exported targets (core, C API, and any providers that were built).
+include(CMakeFindDependencyMacro)
+find_dependency(Boost 1.82 COMPONENTS json)
+find_dependency(OpenSSL)
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/ai-sdk-cppTargets.cmake")
+
+# Convenience alias: ai-sdk-cpp::core -> the shared core library (when built),
+# else the static one.
+if(NOT TARGET ai-sdk-cpp::core)
+    if(TARGET ai-sdk-cpp::ai-sdk-core-shared)
+        add_library(ai-sdk-cpp::core ALIAS ai-sdk-cpp::ai-sdk-core-shared)
+    elseif(TARGET ai-sdk-cpp::ai-sdk-core-static)
+        add_library(ai-sdk-cpp::core ALIAS ai-sdk-cpp::ai-sdk-core-static)
+    endif()
+endif()
+
+check_required_components(ai-sdk-cpp)
