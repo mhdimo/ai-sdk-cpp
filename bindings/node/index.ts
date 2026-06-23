@@ -56,7 +56,7 @@ interface NativeToolSet {
 interface NativeAgent {
   call(prompt: string): NativeResult;
 }
-type ToolCallback = (toolName: string, inputJson: string) => { output: string; isError: boolean };
+type ToolCallback = (toolName: string, inputJson: string) => Promise<{ output: string; isError: boolean }> | { output: string; isError: boolean };
 type StreamCallback = (type: string, text: string | null, toolName: string | null, toolCallId: string | null) => void;
 
 interface NativeGenerateOpts {
@@ -167,10 +167,10 @@ export async function generateText(opts: GenerateTextOptions): Promise<GenerateR
   if (opts.tools && opts.tools.length > 0) {
     nativeToolSet = new native.ToolSet();
     for (const t of opts.tools) {
-      nativeToolSet.add(t.name, t.description, JSON.stringify(t.schema), (toolName, inputJson) => {
+      nativeToolSet.add(t.name, t.description, JSON.stringify(t.schema), async (toolName, inputJson) => {
         const input = JSON.parse(inputJson);
         try {
-          const result = t.execute(input);
+          const result = await t.execute(input);
           const output = typeof result === 'string' ? result : JSON.stringify(result);
           return { output, isError: false };
         } catch (e: any) {
@@ -255,10 +255,10 @@ export class Agent {
   }) {
     const toolSet = new native.ToolSet();
     for (const t of opts.tools) {
-      toolSet.add(t.name, t.description, JSON.stringify(t.schema), (toolName, inputJson) => {
+      toolSet.add(t.name, t.description, JSON.stringify(t.schema), async (toolName, inputJson) => {
         const input = JSON.parse(inputJson);
         try {
-          const result = t.execute(input);
+          const result = await t.execute(input);
           const output = typeof result === 'string' ? result : JSON.stringify(result);
           return { output, isError: false };
         } catch (e: any) {

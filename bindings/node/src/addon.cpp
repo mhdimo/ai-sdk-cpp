@@ -4,6 +4,9 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <map>
+#include <future>
 
 class ContextWrapper : public Napi::ObjectWrap<ContextWrapper> {
 public:
@@ -38,6 +41,8 @@ private:
     ai_model_t model_;
 };
 
+struct ToolCallbackData;  // defined below; ToolSetWrapper owns + releases these.
+
 class ToolSetWrapper : public Napi::ObjectWrap<ToolSetWrapper> {
 public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports);
@@ -49,6 +54,7 @@ public:
 
 private:
     ai_tool_set_t tools_;
+    std::vector<ToolCallbackData*> tool_callbacks_;
 };
 
 class AgentWrapper : public Napi::ObjectWrap<AgentWrapper> {
@@ -157,6 +163,92 @@ ModelWrapper::~ModelWrapper() {
     if (model_) ai_model_destroy(model_);
 }
 
+// --- Async tool execution ---
+// When the agent loop runs on a worker thread (async streaming), tool callbacks
+// fire on that thread. They invoke the (possibly async — e.g. interactive
+// permission prompts) JS tool via a ThreadSafeFunction and await the result
+// through a shared promise/future. Sync entry points (main thread) still call
+// the JS tool directly.
+
+static std::thread::id g_main_thread_id;
+static std::mutex g_pending_mutex;
+static std::map<uint64_t, std::shared_ptr<std::promise<std::pair<std::string, bool>>>> g_pending;
+static std::atomic<uint64_t> g_call_id{0};
+static Napi::FunctionReference g_resolve_ref;
+
+struct ToolCallPayload {
+    uint64_t id;
+    std::string name;
+    std::string input;
+};
+
+static ai_tool_result_t make_tool_result(const std::string& output, bool is_error) {
+    ai_tool_result_t res = {};
+    char* copy = new char[output.size() + 1];
+    std::copy(output.begin(), output.end(), copy);
+    copy[output.size()] = '\0';
+    res.output_json = copy;
+    res.is_error = is_error ? 1 : 0;
+    return res;
+}
+
+// Main-thread TSFN receiver: calls the JS tool, then fulfills the pending
+// promise via __resolveToolCall (handles both Promise-returning and sync tools).
+static void ToolCallReceiver(Napi::Env env, Napi::Function jsToolFn, ToolCallPayload* p) {
+    uint64_t id = p->id;
+    Napi::Value ret = jsToolFn.Call({ Napi::String::New(env, p->name), Napi::String::New(env, p->input) });
+    delete p;
+
+    auto extract = [](const Napi::Object& o) -> std::pair<std::string, bool> {
+        std::string out = (o.Has("output") && o.Get("output").IsString())
+            ? o.Get("output").As<Napi::String>().Utf8Value() : "";
+        bool err = o.Has("isError") && o.Get("isError").IsBoolean() && o.Get("isError").As<Napi::Boolean>().Value();
+        return { out, err };
+    };
+
+    if (ret.IsObject() && ret.As<Napi::Object>().Has("then")) {
+        Napi::Object promiseObj = ret.As<Napi::Object>();
+        Napi::Function then = promiseObj.Get("then").As<Napi::Function>();
+        Napi::Function onFulfill = Napi::Function::New(env, [id](const Napi::CallbackInfo& info) {
+            std::string out; bool err = false;
+            if (info.Length() > 0 && info[0].IsObject()) std::tie(out, err) = std::make_pair(
+                (info[0].As<Napi::Object>().Has("output") && info[0].As<Napi::Object>().Get("output").IsString())
+                    ? info[0].As<Napi::Object>().Get("output").As<Napi::String>().Utf8Value() : "",
+                info[0].As<Napi::Object>().Has("isError") && info[0].As<Napi::Object>().Get("isError").As<Napi::Boolean>().Value());
+            g_resolve_ref.Call({ Napi::Number::New(info.Env(), (double)id), Napi::String::New(info.Env(), out), Napi::Boolean::New(info.Env(), err) });
+            return info.Env().Undefined();
+        });
+        Napi::Function onReject = Napi::Function::New(env, [id](const Napi::CallbackInfo& info) {
+            std::string emsg = (info.Length() > 0 && info[0].IsObject() && info[0].As<Napi::Object>().Has("message"))
+                ? info[0].As<Napi::Object>().Get("message").As<Napi::String>().Utf8Value() : std::string("tool threw");
+            g_resolve_ref.Call({ Napi::Number::New(info.Env(), (double)id), Napi::String::New(info.Env(), emsg), Napi::Boolean::New(info.Env(), true) });
+            return info.Env().Undefined();
+        });
+        then.Call(promiseObj, { onFulfill, onReject });
+    } else if (ret.IsObject()) {
+        auto [out, err] = extract(ret.As<Napi::Object>());
+        g_resolve_ref.Call({ Napi::Number::New(env, (double)id), Napi::String::New(env, out), Napi::Boolean::New(env, err) });
+    } else {
+        g_resolve_ref.Call({ Napi::Number::New(env, (double)id), Napi::String::New(env, ""), Napi::Boolean::New(env, true) });
+    }
+}
+
+// __resolveToolCall(id, output, isError) — invoked from JS (.then/.catch) to
+// fulfill the promise the worker thread is blocked on.
+static Napi::Value ResolveToolCall(const Napi::CallbackInfo& info) {
+    uint64_t id = (uint64_t)info[0].As<Napi::Number>().DoubleValue();
+    std::string output = info[1].As<Napi::String>().Utf8Value();
+    bool is_error = info[2].As<Napi::Boolean>().Value();
+    std::shared_ptr<std::promise<std::pair<std::string, bool>>> prom;
+    {
+        std::lock_guard<std::mutex> lk(g_pending_mutex);
+        auto it = g_pending.find(id);
+        if (it != g_pending.end()) prom = it->second;
+    }
+    if (prom) prom->set_value({ output, is_error });
+    return info.Env().Undefined();
+}
+
 // --- ToolSetWrapper ---
 
 struct ToolCallbackData {
@@ -182,6 +274,11 @@ ToolSetWrapper::ToolSetWrapper(const Napi::CallbackInfo& info)
 
 ToolSetWrapper::~ToolSetWrapper() {
     if (tools_) ai_tool_set_destroy(tools_);
+    for (auto* cb : tool_callbacks_) {
+        cb->tsfn.Release();
+        delete cb;
+    }
+    tool_callbacks_.clear();
 }
 
 void ToolSetWrapper::AddTool(const Napi::CallbackInfo& info) {
@@ -199,32 +296,54 @@ void ToolSetWrapper::AddTool(const Napi::CallbackInfo& info) {
 
     auto* cb_data = new ToolCallbackData();
     cb_data->callback = Napi::Persistent(callback);
+    cb_data->tsfn = Napi::ThreadSafeFunction::New(env, callback, "ai-tool", 0, 1);
+    // Don't let the per-tool TSFN hold the event loop alive between turns (the
+    // stream TSFN already keeps it alive while a turn is in flight).
+    cb_data->tsfn.Unref(env);
 
     ai_tool_fn tool_fn = [](const char* tool_name, const char* input_json, void* user_data) -> ai_tool_result_t {
         auto* data = static_cast<ToolCallbackData*>(user_data);
-        Napi::Env env = data->callback.Env();
 
-        Napi::Value result = data->callback.Call({
-            Napi::String::New(env, tool_name),
-            Napi::String::New(env, input_json),
-        });
-
-        ai_tool_result_t res = {};
-        if (result.IsObject()) {
-            auto obj = result.As<Napi::Object>();
-            std::string output = obj.Get("output").As<Napi::String>().Utf8Value();
-            bool is_error = obj.Get("isError").As<Napi::Boolean>().Value();
-            // Caller owns the string, we need to copy
-            char* output_copy = new char[output.size() + 1];
-            std::copy(output.begin(), output.end(), output_copy);
-            output_copy[output.size()] = '\0';
-            res.output_json = output_copy;
-            res.is_error = is_error ? 1 : 0;
+        // Sync entry points (generateText/agent.call/session.send) run the
+        // io_context on the main thread — call the JS tool directly.
+        if (std::this_thread::get_id() == g_main_thread_id) {
+            Napi::Env env = data->callback.Env();
+            Napi::Value result = data->callback.Call({
+                Napi::String::New(env, tool_name ? tool_name : ""),
+                Napi::String::New(env, input_json ? input_json : ""),
+            });
+            if (result.IsObject()) {
+                auto obj = result.As<Napi::Object>();
+                std::string output = (obj.Has("output") && obj.Get("output").IsString())
+                    ? obj.Get("output").As<Napi::String>().Utf8Value() : "";
+                bool is_error = obj.Has("isError") && obj.Get("isError").As<Napi::Boolean>().Value();
+                return make_tool_result(output, is_error);
+            }
+            return make_tool_result("", true);
         }
-        return res;
+
+        // Async streaming runs the loop on a worker thread — invoke the (possibly
+        // async) JS tool via TSFN and block until JS resolves. The main thread
+        // stays free to run the tool (incl. interactive permission prompts).
+        auto promise = std::make_shared<std::promise<std::pair<std::string, bool>>>();
+        auto fut = promise->get_future();
+        uint64_t id = g_call_id.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lk(g_pending_mutex);
+            g_pending[id] = promise;
+        }
+        auto* p = new ToolCallPayload{ id, tool_name ? tool_name : "", input_json ? input_json : "" };
+        data->tsfn.NonBlockingCall(p, ToolCallReceiver);
+        auto result_pair = fut.get();
+        {
+            std::lock_guard<std::mutex> lk(g_pending_mutex);
+            g_pending.erase(id);
+        }
+        return make_tool_result(result_pair.first, result_pair.second);
     };
 
     ai_tool_set_add(tools_, name.c_str(), description.c_str(), schema_json.c_str(), tool_fn, cb_data);
+    tool_callbacks_.push_back(cb_data);
 }
 
 // --- AgentWrapper ---
@@ -772,6 +891,9 @@ Napi::Value BatchWrapper::Run(const Napi::CallbackInfo& info) {
 // --- Module initialization ---
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    g_main_thread_id = std::this_thread::get_id();
+    g_resolve_ref = Napi::Persistent(Napi::Function::New(env, ResolveToolCall, "__resolveToolCall"));
+
     ContextWrapper::Init(env, exports);
     ProviderWrapper::Init(env, exports);
     ModelWrapper::Init(env, exports);
