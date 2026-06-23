@@ -29,3 +29,7 @@ build_py/
 __pycache__/
 *.pyc
 *.pyo
+
+# Node
+node_modules/
+bindings/node/dist/

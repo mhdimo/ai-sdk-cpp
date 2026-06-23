@@ -13,7 +13,9 @@
  *   });
  */
 
-const native = require('./build/Release/ai_sdk_native.node') as NativeBinding;
+// The compiled addon lands in build/Release/ (node-gyp output). This file ships
+// from dist/, so the addon is one level up.
+const native = require('../build/Release/ai_sdk_native.node') as NativeBinding;
 
 interface NativeBinding {
   Context: new () => NativeContext;
@@ -103,14 +105,10 @@ function createProvider(name: string, opts: ProviderOptions = {}): ProviderInsta
 export const createAnthropic = (opts?: ProviderOptions) => createProvider('anthropic', opts);
 export const createOpenAI = (opts?: ProviderOptions) => createProvider('openai', opts);
 export const createGoogle = (opts?: ProviderOptions) => createProvider('google', opts);
-export const createGroq = (opts?: ProviderOptions) => createProvider('groq', opts);
-export const createXAI = (opts?: ProviderOptions) => createProvider('xai', opts);
-export const createMistral = (opts?: ProviderOptions) => createProvider('mistral', opts);
-export const createFireworks = (opts?: ProviderOptions) => createProvider('fireworks', opts);
-export const createTogetherAI = (opts?: ProviderOptions) => createProvider('togetherai', opts);
-export const createPerplexity = (opts?: ProviderOptions) => createProvider('perplexity', opts);
-export const createCohere = (opts?: ProviderOptions) => createProvider('cohere', opts);
 export const createDeepSeek = (opts?: ProviderOptions) => createProvider('deepseek', opts);
+export const createZai = (opts?: ProviderOptions) => createProvider('zai', opts);
+export const createDeepSeekAnthropic = (opts?: ProviderOptions) => createProvider('deepseek-anthropic', opts);
+export const createZaiOpenAI = (opts?: ProviderOptions) => createProvider('zai-openai', opts);
 
 export interface ToolDefinition {
   name: string;

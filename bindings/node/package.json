@@ -18,11 +18,12 @@
     "node-gyp-build": "^4.8.0"
   },
   "devDependencies": {
+    "@types/node": "^26.0.0",
     "node-gyp": "^10.0.0",
     "typescript": "^5.4.0"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "license": "Apache-2.0"
+  "license": "MIT"
 }

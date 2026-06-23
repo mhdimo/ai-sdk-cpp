@@ -24,6 +24,7 @@
 #include <vector>
 #include <mutex>
 #include <cstring>
+#include <cstdlib>
 
 namespace json = boost::json;
 
@@ -207,6 +208,7 @@ ai_provider_t ai_provider_create(ai_context_t ctx, const char* provider_name, ai
             ai::providers::anthropic::AnthropicOptions o{.io_context = ctx->ioc};
             if (api_key) o.api_key = *api_key;
             if (opts.base_url) o.base_url = opts.base_url;
+            else if (const char* env = std::getenv("ANTHROPIC_BASE_URL"); env && *env) o.base_url = env;
             provider = ai::providers::anthropic::create_anthropic(std::move(o));
         }
 #endif
@@ -215,6 +217,7 @@ ai_provider_t ai_provider_create(ai_context_t ctx, const char* provider_name, ai
             ai::providers::openai::OpenAIOptions o{.io_context = ctx->ioc};
             if (api_key) o.api_key = *api_key;
             if (opts.base_url) o.base_url = opts.base_url;
+            else if (const char* env = std::getenv("OPENAI_BASE_URL"); env && *env) o.base_url = env;
             provider = ai::providers::openai::create_openai(std::move(o));
         }
 #endif

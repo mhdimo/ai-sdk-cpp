@@ -13,7 +13,7 @@
       "libraries": [
         "-L<(module_root_dir)/../../build/bindings/c",
         "-lai_sdk",
-        "-Wl,-rpath,@loader_path/../../build/bindings/c"
+        "-Wl,-rpath,<(module_root_dir)/../../build/bindings/c"
       ],
       "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
       "conditions": [
@@ -28,7 +28,7 @@
         ["OS=='linux'", {
           "cflags_cc": ["-std=c++17", "-fexceptions"],
           "libraries": [
-            "-Wl,-rpath,$ORIGIN/../../build/bindings/c"
+            "-Wl,-rpath,<(module_root_dir)/../../build/bindings/c"
           ]
         }],
         ["OS=='win'", {
