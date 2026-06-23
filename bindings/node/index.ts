@@ -214,8 +214,9 @@ export interface StreamEvent {
 }
 
 export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<StreamEvent> {
-  const events: StreamEvent[] = [];
-  let done = false;
+  const queue: StreamEvent[] = [];
+  let resolveWait: (() => void) | null = null;
+  let finished = false;
 
   const nativeOpts: NativeGenerateOpts = {
     prompt: opts.prompt,
@@ -224,17 +225,22 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
     temperature: opts.temperature,
   };
 
+  // native.streamText returns immediately; events arrive asynchronously.
   native.streamText(opts.model._native, nativeOpts, (type, text, toolName, toolCallId) => {
     const event: StreamEvent = { type: type as StreamEvent['type'] };
     if (text) event.text = text;
     if (toolName) event.toolName = toolName;
     if (toolCallId) event.toolCallId = toolCallId;
-    events.push(event);
-    if (type === 'finish' || type === 'error') done = true;
+    queue.push(event);
+    if (type === 'finish' || type === 'error') finished = true;
+    if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
   });
 
-  for (const event of events) {
-    yield event;
+  while (!finished || queue.length > 0) {
+    if (queue.length === 0) {
+      await new Promise<void>((r) => { resolveWait = r; });
+    }
+    while (queue.length > 0) yield queue.shift()!;
   }
 }
 
@@ -317,17 +323,30 @@ export class Session {
     };
   }
 
-  /** Stream a session turn. NOTE: blocks the JS thread until the turn completes
-   *  (the native layer drains synchronously). For a non-blocking UI, run on a
-   *  worker thread. */
-  sendStream(prompt: string, onEvent: (ev: StreamEvent) => void): void {
+  /** Stream a session turn as an async iterable of events. Non-blocking: the
+   *  native stream runs on a background thread; events are delivered on the JS
+   *  event loop, so the UI (e.g. Ink) stays responsive. */
+  async *sendStream(prompt: string): AsyncGenerator<StreamEvent> {
+    const queue: StreamEvent[] = [];
+    let resolveWait: (() => void) | null = null;
+    let finished = false;
+
     this._native.sendStream(prompt, (type, text, toolName, toolCallId) => {
       const ev: StreamEvent = { type: type as StreamEvent['type'] };
       if (text) ev.text = text;
       if (toolName) ev.toolName = toolName;
       if (toolCallId) ev.toolCallId = toolCallId;
-      onEvent(ev);
+      queue.push(ev);
+      if (type === "finish" || type === "error") finished = true;
+      if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
     });
+
+    while (!finished || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((r) => { resolveWait = r; });
+      }
+      while (queue.length > 0) yield queue.shift()!;
+    }
   }
 }
 

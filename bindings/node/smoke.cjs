@@ -21,12 +21,12 @@ async function main() {
   const session = new ai.Session(agent);
   const counts = {};
   process.stdout.write("stream: ");
-  session.sendStream("Reply with exactly: pong", (ev) => {
+  for await (const ev of session.sendStream("Reply with exactly: pong")) {
     counts[ev.type] = (counts[ev.type] || 0) + 1;
     if (ev.type === "text_delta") process.stdout.write(ev.text || "");
     else if (ev.type === "finish") console.log(" [finish]");
     else if (ev.type === "reasoning_delta") process.stdout.write("\x1b[2m" + (ev.text || "") + "\x1b[0m");
-  });
+  }
   console.log("event counts:", counts);
 
   console.log("\n-- MemoryStore --");

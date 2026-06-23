@@ -2,6 +2,8 @@
 #include "ai_sdk.h"
 #include <string>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 class ContextWrapper : public Napi::ObjectWrap<ContextWrapper> {
 public:
@@ -301,41 +303,81 @@ Napi::Value AgentWrapper::Call(const Napi::CallbackInfo& info) {
     return obj;
 }
 
-// --- Shared stream callback (used by streamText + Session.sendStream) ---
-// Maps C stream events — including reasoning and tool_result — to the JS
-// callback as (type, text, toolName, toolCallId).
+// --- Async streaming: background thread + ThreadSafeFunction ---
+//
+// The C stream calls (ai_stream_text, ai_session_send_stream) block while they
+// drain the io_context on the calling thread. To keep the JS event loop alive
+// (required for Ink/React UIs), each stream runs on a detached std::thread and
+// events are relayed to the JS callback on the main thread via a
+// Napi::ThreadSafeFunction. The C API stays a simple blocking function.
 
-struct StreamCallbackData {
-    Napi::FunctionReference fn;
+struct StreamEventPayload {
+    std::string type;
+    std::string text;
+    std::string toolName;
+    std::string toolCallId;
 };
 
-static ai_stream_callback_fn make_stream_callback(Napi::Function callback, StreamCallbackData*& out_data) {
-    out_data = new StreamCallbackData();
-    out_data->fn = Napi::Persistent(callback);
-    return [](ai_stream_event_t event, void* user_data) {
-        auto* data = static_cast<StreamCallbackData*>(user_data);
-        Napi::Env env = data->fn.Env();
-        const char* type_str = "unknown";
-        switch (event.type) {
-            case AI_STREAM_TEXT_DELTA: type_str = "text_delta"; break;
-            case AI_STREAM_TOOL_CALL_START: type_str = "tool_call_start"; break;
-            case AI_STREAM_TOOL_CALL_DELTA: type_str = "tool_call_delta"; break;
-            case AI_STREAM_TOOL_CALL_END: type_str = "tool_call_end"; break;
-            case AI_STREAM_FINISH: type_str = "finish"; break;
-            case AI_STREAM_ERROR: type_str = "error"; break;
-            case AI_STREAM_STEP_FINISH: type_str = "step_finish"; break;
-            case AI_STREAM_REASONING_START: type_str = "reasoning_start"; break;
-            case AI_STREAM_REASONING_DELTA: type_str = "reasoning_delta"; break;
-            case AI_STREAM_REASONING_END: type_str = "reasoning_end"; break;
-            case AI_STREAM_TOOL_RESULT: type_str = "tool_result"; break;
-        }
-        data->fn.Call({
-            Napi::String::New(env, type_str),
-            event.text ? Napi::String::New(env, event.text) : env.Null(),
-            event.tool_name ? Napi::String::New(env, event.tool_name) : env.Null(),
-            event.tool_call_id ? Napi::String::New(env, event.tool_call_id) : env.Null(),
+struct StreamSession {
+    Napi::ThreadSafeFunction tsfn;
+    std::atomic<bool> terminal{false};   // set when a finish/error event fires
+};
+
+// Relay one C stream event to JS via the TSFN. Called on the worker thread.
+static void emit_stream_event(StreamSession& s, const ai_stream_event_t& event) {
+    auto* p = new StreamEventPayload();
+    switch (event.type) {
+        case AI_STREAM_TEXT_DELTA: p->type = "text_delta"; break;
+        case AI_STREAM_TOOL_CALL_START: p->type = "tool_call_start"; break;
+        case AI_STREAM_TOOL_CALL_DELTA: p->type = "tool_call_delta"; break;
+        case AI_STREAM_TOOL_CALL_END: p->type = "tool_call_end"; break;
+        case AI_STREAM_FINISH: p->type = "finish"; s.terminal = true; break;
+        case AI_STREAM_ERROR: p->type = "error"; s.terminal = true; break;
+        case AI_STREAM_STEP_FINISH: p->type = "step_finish"; break;
+        case AI_STREAM_REASONING_START: p->type = "reasoning_start"; break;
+        case AI_STREAM_REASONING_DELTA: p->type = "reasoning_delta"; break;
+        case AI_STREAM_REASONING_END: p->type = "reasoning_end"; break;
+        case AI_STREAM_TOOL_RESULT: p->type = "tool_result"; break;
+        default: p->type = "unknown"; break;
+    }
+    if (event.text) p->text = event.text;
+    if (event.tool_name) p->toolName = event.tool_name;
+    if (event.tool_call_id) p->toolCallId = event.tool_call_id;
+    s.tsfn.NonBlockingCall(p, [](Napi::Env env, Napi::Function jsCallback, StreamEventPayload* p) {
+        jsCallback.Call({
+            Napi::String::New(env, p->type),
+            p->text.empty() ? env.Null() : Napi::String::New(env, p->text),
+            p->toolName.empty() ? env.Null() : Napi::String::New(env, p->toolName),
+            p->toolCallId.empty() ? env.Null() : Napi::String::New(env, p->toolCallId),
         });
-    };
+        delete p;
+    });
+}
+
+// C stream callback shared by both streaming entry points.
+static ai_stream_callback_fn stream_callback = [](ai_stream_event_t event, void* user_data) {
+    emit_stream_event(*static_cast<StreamSession*>(user_data), event);
+};
+
+// Run a blocking C stream call on a worker thread; return immediately. `cCall`
+// is invoked as cCall(StreamSession* s, ai_stream_callback_fn cb) and must drive
+// the stream to completion. After it returns, the TSFN is released.
+template <typename F>
+static void RunStreamAsync(Napi::Env env, Napi::Function callback, F cCall) {
+    auto* s = new StreamSession();
+    s->tsfn = Napi::ThreadSafeFunction::New(env, callback, "ai-stream", 0, 1);
+    std::thread([s, cCall = std::move(cCall)]() mutable {
+        cCall(s, stream_callback);
+        if (!s->terminal) {
+            // The C call returned without a finish/error event (e.g. it failed
+            // before streaming) — synthesize one so the JS consumer terminates.
+            ai_stream_event_t ev = {};
+            ev.type = AI_STREAM_FINISH;
+            emit_stream_event(*s, ev);
+        }
+        s->tsfn.Release();
+        delete s;
+    }).detach();
 }
 
 // --- Free functions ---
@@ -419,36 +461,37 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
     auto opts_obj = info[1].As<Napi::Object>();
     Napi::Function callback = info[2].As<Napi::Function>();
 
-    ai_generate_options_t opts = {};
-    opts.model = model_wrap->handle();
-    opts.temperature = -1;
-
-    std::string prompt_str, system_str, messages_str;
+    // Option strings are captured by value — they must outlive this call since
+    // the stream runs on a worker thread after we return.
+    auto model = model_wrap->handle();
+    std::string prompt_str, system_str;
+    int max_output_tokens = 0;
+    double temperature = -1;
 
     if (opts_obj.Has("prompt") && !opts_obj.Get("prompt").IsUndefined()) {
         prompt_str = opts_obj.Get("prompt").As<Napi::String>().Utf8Value();
-        opts.prompt = prompt_str.c_str();
     }
     if (opts_obj.Has("system") && !opts_obj.Get("system").IsUndefined()) {
         system_str = opts_obj.Get("system").As<Napi::String>().Utf8Value();
-        opts.system = system_str.c_str();
     }
     if (opts_obj.Has("maxOutputTokens") && !opts_obj.Get("maxOutputTokens").IsUndefined()) {
-        opts.max_output_tokens = opts_obj.Get("maxOutputTokens").As<Napi::Number>().Int32Value();
+        max_output_tokens = opts_obj.Get("maxOutputTokens").As<Napi::Number>().Int32Value();
     }
     if (opts_obj.Has("temperature") && !opts_obj.Get("temperature").IsUndefined()) {
-        opts.temperature = opts_obj.Get("temperature").As<Napi::Number>().DoubleValue();
+        temperature = opts_obj.Get("temperature").As<Napi::Number>().DoubleValue();
     }
 
-    StreamCallbackData* cb_data = nullptr;
-    ai_stream_callback_fn stream_cb = make_stream_callback(callback, cb_data);
-
-    ai_status_t status = ai_stream_text(opts, stream_cb, cb_data);
-    delete cb_data;
-
-    if (status != AI_OK) {
-        Napi::Error::New(env, ai_status_message(status)).ThrowAsJavaScriptException();
-    }
+    RunStreamAsync(env, callback,
+        [model, prompt_str, system_str, max_output_tokens, temperature]
+        (StreamSession* s, ai_stream_callback_fn cb) {
+            ai_generate_options_t opts = {};
+            opts.model = model;
+            opts.temperature = temperature;
+            opts.max_output_tokens = max_output_tokens;
+            opts.prompt = prompt_str.empty() ? nullptr : prompt_str.c_str();
+            opts.system = system_str.empty() ? nullptr : system_str.c_str();
+            ai_stream_text(opts, cb, s);
+        });
 
     return env.Undefined();
 }
@@ -532,14 +575,13 @@ Napi::Value SessionWrapper::SendStream(const Napi::CallbackInfo& info) {
     }
     std::string prompt = info[0].As<Napi::String>().Utf8Value();
     Napi::Function callback = info[1].As<Napi::Function>();
+    ai_session_t session = session_;
 
-    StreamCallbackData* cb_data = nullptr;
-    ai_stream_callback_fn stream_cb = make_stream_callback(callback, cb_data);
-    ai_status_t status = ai_session_send_stream(session_, prompt.c_str(), stream_cb, cb_data);
-    delete cb_data;
-    if (status != AI_OK) {
-        Napi::Error::New(env, ai_status_message(status)).ThrowAsJavaScriptException();
-    }
+    RunStreamAsync(env, callback,
+        [session, prompt](StreamSession* s, ai_stream_callback_fn cb) {
+            ai_session_send_stream(session, prompt.c_str(), cb, s);
+        });
+
     return env.Undefined();
 }
 
