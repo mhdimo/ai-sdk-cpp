@@ -26,6 +26,8 @@ interface NativeBinding {
   generateText(model: NativeModel, opts: NativeGenerateOpts): NativeResult;
   streamText(model: NativeModel, opts: NativeGenerateOpts, callback: StreamCallback): void;
   Session: new (agent: NativeAgent) => NativeSession;
+  MemoryStore: new (dir: string) => NativeMemoryStore;
+  Batch: new (provider: NativeProvider, modelId: string) => NativeBatch;
   standardToolkit(): NativeToolSet;
   withPermissions(tools: NativeToolSet, policy: PermissionPolicy): NativeToolSet;
   version(): string;
@@ -33,6 +35,16 @@ interface NativeBinding {
 
 interface NativeSession {
   send(prompt: string): NativeResult;
+  sendStream(prompt: string, callback: StreamCallback): void;
+}
+
+interface NativeMemoryStore {
+  save(scope: string, key: string, content: string): void;
+}
+interface NativeBatchRequest { customId?: string; prompt?: string; system?: string; maxOutputTokens?: number; temperature?: number; }
+interface NativeBatchResult { batchId: string; status: string; items: Array<{ customId: string; result: string | null; error: string | null }>; }
+interface NativeBatch {
+  run(requests: NativeBatchRequest[], pollIntervalMs?: number): NativeBatchResult;
 }
 
 type NativeContext = object;
@@ -87,6 +99,7 @@ export interface Model {
 export interface ProviderInstance {
   (modelId: string): Model;
   model(modelId: string): Model;
+  _native: NativeProvider;
 }
 
 function createProvider(name: string, opts: ProviderOptions = {}): ProviderInstance {
@@ -99,7 +112,8 @@ function createProvider(name: string, opts: ProviderOptions = {}): ProviderInsta
   };
 
   provider.model = provider;
-  return provider;
+  (provider as any)._native = nativeProvider;
+  return provider as unknown as ProviderInstance;
 }
 
 export const createAnthropic = (opts?: ProviderOptions) => createProvider('anthropic', opts);
@@ -193,7 +207,7 @@ export async function generateText(opts: GenerateTextOptions): Promise<GenerateR
 }
 
 export interface StreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'finish' | 'error';
+  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'reasoning_start' | 'reasoning_delta' | 'reasoning_end' | 'tool_result' | 'step_finish' | 'finish' | 'error';
   text?: string;
   toolName?: string;
   toolCallId?: string;
@@ -301,5 +315,53 @@ export class Session {
       usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
       steps: result.steps,
     };
+  }
+
+  /** Stream a session turn. NOTE: blocks the JS thread until the turn completes
+   *  (the native layer drains synchronously). For a non-blocking UI, run on a
+   *  worker thread. */
+  sendStream(prompt: string, onEvent: (ev: StreamEvent) => void): void {
+    this._native.sendStream(prompt, (type, text, toolName, toolCallId) => {
+      const ev: StreamEvent = { type: type as StreamEvent['type'] };
+      if (text) ev.text = text;
+      if (toolName) ev.toolName = toolName;
+      if (toolCallId) ev.toolCallId = toolCallId;
+      onEvent(ev);
+    });
+  }
+}
+
+// --- Memory + Batch ---
+
+export class MemoryStore {
+  private _native: NativeMemoryStore;
+  constructor(dir: string) {
+    this._native = new native.MemoryStore(dir);
+  }
+  save(scope: string, key: string, content: string): void {
+    this._native.save(scope, key, content);
+  }
+}
+
+export interface BatchRequest {
+  customId?: string;
+  prompt?: string;
+  system?: string;
+  maxOutputTokens?: number;
+  temperature?: number;
+}
+export interface BatchResult {
+  batchId: string;
+  status: string;
+  items: Array<{ customId: string; result: string | null; error: string | null }>;
+}
+
+export class Batch {
+  private _native: NativeBatch;
+  constructor(provider: ProviderInstance, modelId: string) {
+    this._native = new native.Batch(provider._native, modelId);
+  }
+  run(requests: BatchRequest[], pollIntervalMs = 5000): BatchResult {
+    return this._native.run(requests, pollIntervalMs);
   }
 }

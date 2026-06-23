@@ -1,6 +1,7 @@
 #include <napi.h>
 #include "ai_sdk.h"
 #include <string>
+#include <vector>
 
 class ContextWrapper : public Napi::ObjectWrap<ContextWrapper> {
 public:
@@ -300,6 +301,43 @@ Napi::Value AgentWrapper::Call(const Napi::CallbackInfo& info) {
     return obj;
 }
 
+// --- Shared stream callback (used by streamText + Session.sendStream) ---
+// Maps C stream events — including reasoning and tool_result — to the JS
+// callback as (type, text, toolName, toolCallId).
+
+struct StreamCallbackData {
+    Napi::FunctionReference fn;
+};
+
+static ai_stream_callback_fn make_stream_callback(Napi::Function callback, StreamCallbackData*& out_data) {
+    out_data = new StreamCallbackData();
+    out_data->fn = Napi::Persistent(callback);
+    return [](ai_stream_event_t event, void* user_data) {
+        auto* data = static_cast<StreamCallbackData*>(user_data);
+        Napi::Env env = data->fn.Env();
+        const char* type_str = "unknown";
+        switch (event.type) {
+            case AI_STREAM_TEXT_DELTA: type_str = "text_delta"; break;
+            case AI_STREAM_TOOL_CALL_START: type_str = "tool_call_start"; break;
+            case AI_STREAM_TOOL_CALL_DELTA: type_str = "tool_call_delta"; break;
+            case AI_STREAM_TOOL_CALL_END: type_str = "tool_call_end"; break;
+            case AI_STREAM_FINISH: type_str = "finish"; break;
+            case AI_STREAM_ERROR: type_str = "error"; break;
+            case AI_STREAM_STEP_FINISH: type_str = "step_finish"; break;
+            case AI_STREAM_REASONING_START: type_str = "reasoning_start"; break;
+            case AI_STREAM_REASONING_DELTA: type_str = "reasoning_delta"; break;
+            case AI_STREAM_REASONING_END: type_str = "reasoning_end"; break;
+            case AI_STREAM_TOOL_RESULT: type_str = "tool_result"; break;
+        }
+        data->fn.Call({
+            Napi::String::New(env, type_str),
+            event.text ? Napi::String::New(env, event.text) : env.Null(),
+            event.tool_name ? Napi::String::New(env, event.tool_name) : env.Null(),
+            event.tool_call_id ? Napi::String::New(env, event.tool_call_id) : env.Null(),
+        });
+    };
+}
+
 // --- Free functions ---
 
 Napi::Value GenerateText(const Napi::CallbackInfo& info) {
@@ -402,34 +440,8 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
         opts.temperature = opts_obj.Get("temperature").As<Napi::Number>().DoubleValue();
     }
 
-    struct StreamCallbackData {
-        Napi::FunctionReference fn;
-    };
-    auto* cb_data = new StreamCallbackData();
-    cb_data->fn = Napi::Persistent(callback);
-
-    ai_stream_callback_fn stream_cb = [](ai_stream_event_t event, void* user_data) {
-        auto* data = static_cast<StreamCallbackData*>(user_data);
-        Napi::Env env = data->fn.Env();
-
-        const char* type_str = "unknown";
-        switch (event.type) {
-            case AI_STREAM_TEXT_DELTA: type_str = "text_delta"; break;
-            case AI_STREAM_TOOL_CALL_START: type_str = "tool_call_start"; break;
-            case AI_STREAM_TOOL_CALL_DELTA: type_str = "tool_call_delta"; break;
-            case AI_STREAM_TOOL_CALL_END: type_str = "tool_call_end"; break;
-            case AI_STREAM_FINISH: type_str = "finish"; break;
-            case AI_STREAM_ERROR: type_str = "error"; break;
-            case AI_STREAM_STEP_FINISH: type_str = "step_finish"; break;
-        }
-
-        data->fn.Call({
-            Napi::String::New(env, type_str),
-            event.text ? Napi::String::New(env, event.text) : env.Null(),
-            event.tool_name ? Napi::String::New(env, event.tool_name) : env.Null(),
-            event.tool_call_id ? Napi::String::New(env, event.tool_call_id) : env.Null(),
-        });
-    };
+    StreamCallbackData* cb_data = nullptr;
+    ai_stream_callback_fn stream_cb = make_stream_callback(callback, cb_data);
 
     ai_status_t status = ai_stream_text(opts, stream_cb, cb_data);
     delete cb_data;
@@ -453,6 +465,7 @@ public:
     SessionWrapper(const Napi::CallbackInfo& info);
     ~SessionWrapper();
     Napi::Value Send(const Napi::CallbackInfo& info);
+    Napi::Value SendStream(const Napi::CallbackInfo& info);
 
 private:
     ai_session_t session_;
@@ -461,6 +474,7 @@ private:
 Napi::Object SessionWrapper::Init(Napi::Env env, Napi::Object exports) {
     Napi::Function func = DefineClass(env, "Session", {
         InstanceMethod("send", &SessionWrapper::Send),
+        InstanceMethod("sendStream", &SessionWrapper::SendStream),
     });
     exports.Set("Session", func);
     return exports;
@@ -510,6 +524,25 @@ Napi::Value SessionWrapper::Send(const Napi::CallbackInfo& info) {
     return obj;
 }
 
+Napi::Value SessionWrapper::SendStream(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected (prompt, callback)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string prompt = info[0].As<Napi::String>().Utf8Value();
+    Napi::Function callback = info[1].As<Napi::Function>();
+
+    StreamCallbackData* cb_data = nullptr;
+    ai_stream_callback_fn stream_cb = make_stream_callback(callback, cb_data);
+    ai_status_t status = ai_session_send_stream(session_, prompt.c_str(), stream_cb, cb_data);
+    delete cb_data;
+    if (status != AI_OK) {
+        Napi::Error::New(env, ai_status_message(status)).ThrowAsJavaScriptException();
+    }
+    return env.Undefined();
+}
+
 // --- Standard toolkit + permissions ---
 
 Napi::Value StandardToolkit(const Napi::CallbackInfo& info) {
@@ -548,6 +581,152 @@ Napi::Value WithPermissions(const Napi::CallbackInfo& info) {
     return obj;
 }
 
+// --- MemoryStore ---
+
+class MemoryStoreWrapper : public Napi::ObjectWrap<MemoryStoreWrapper> {
+public:
+    static Napi::Object Init(Napi::Env env, Napi::Object exports);
+    MemoryStoreWrapper(const Napi::CallbackInfo& info);
+    ~MemoryStoreWrapper();
+    Napi::Value Save(const Napi::CallbackInfo& info);
+private:
+    ai_memory_store_t store_;
+};
+
+Napi::Object MemoryStoreWrapper::Init(Napi::Env env, Napi::Object exports) {
+    Napi::Function func = DefineClass(env, "MemoryStore", {
+        InstanceMethod("save", &MemoryStoreWrapper::Save),
+    });
+    exports.Set("MemoryStore", func);
+    return exports;
+}
+
+MemoryStoreWrapper::MemoryStoreWrapper(const Napi::CallbackInfo& info)
+    : Napi::ObjectWrap<MemoryStoreWrapper>(info), store_(nullptr) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected (dir)").ThrowAsJavaScriptException();
+        return;
+    }
+    std::string dir = info[0].As<Napi::String>().Utf8Value();
+    store_ = ai_memory_store_create(dir.c_str());
+    if (!store_) {
+        Napi::Error::New(env, "Failed to create memory store").ThrowAsJavaScriptException();
+    }
+}
+
+MemoryStoreWrapper::~MemoryStoreWrapper() {
+    if (store_) ai_memory_store_destroy(store_);
+}
+
+Napi::Value MemoryStoreWrapper::Save(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 3) {
+        Napi::TypeError::New(env, "Expected (scope, key, content)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string scope = info[0].As<Napi::String>().Utf8Value();
+    std::string key = info[1].As<Napi::String>().Utf8Value();
+    std::string content = info[2].As<Napi::String>().Utf8Value();
+    ai_status_t status = ai_memory_save(store_, scope.c_str(), key.c_str(), content.c_str());
+    if (status != AI_OK) {
+        Napi::Error::New(env, ai_status_message(status)).ThrowAsJavaScriptException();
+    }
+    return env.Undefined();
+}
+
+// --- Batch ---
+
+class BatchWrapper : public Napi::ObjectWrap<BatchWrapper> {
+public:
+    static Napi::Object Init(Napi::Env env, Napi::Object exports);
+    BatchWrapper(const Napi::CallbackInfo& info);
+    ~BatchWrapper();
+    Napi::Value Run(const Napi::CallbackInfo& info);
+private:
+    ai_batch_t batch_;
+};
+
+Napi::Object BatchWrapper::Init(Napi::Env env, Napi::Object exports) {
+    Napi::Function func = DefineClass(env, "Batch", {
+        InstanceMethod("run", &BatchWrapper::Run),
+    });
+    exports.Set("Batch", func);
+    return exports;
+}
+
+BatchWrapper::BatchWrapper(const Napi::CallbackInfo& info)
+    : Napi::ObjectWrap<BatchWrapper>(info), batch_(nullptr) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected (provider, modelId)").ThrowAsJavaScriptException();
+        return;
+    }
+    auto prov_obj = info[0].As<Napi::Object>();
+    auto* prov_wrap = Napi::ObjectWrap<ProviderWrapper>::Unwrap(prov_obj);
+    std::string model_id = info[1].As<Napi::String>().Utf8Value();
+    batch_ = ai_batch_create(prov_wrap->handle(), model_id.c_str());
+    if (!batch_) {
+        Napi::Error::New(env, "Provider does not support batching").ThrowAsJavaScriptException();
+    }
+}
+
+BatchWrapper::~BatchWrapper() {
+    if (batch_) ai_batch_destroy(batch_);
+}
+
+Napi::Value BatchWrapper::Run(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected (requests[, pollIntervalMs])").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Array reqs = info[0].As<Napi::Array>();
+    int count = reqs.Length();
+    int poll_ms = (info.Length() > 1 && info[1].IsNumber()) ? info[1].As<Napi::Number>().Int32Value() : 5000;
+
+    // String storage must outlive the call.
+    std::vector<std::string> custom_ids, prompts, systems;
+    std::vector<ai_batch_request_t> creqs(count);
+    for (int i = 0; i < count; ++i) {
+        auto r = reqs.Get(i).As<Napi::Object>();
+        custom_ids.push_back(r.Has("customId") ? r.Get("customId").As<Napi::String>().Utf8Value()
+                                               : (std::string("req-") + std::to_string(i)));
+        prompts.push_back(r.Has("prompt") ? r.Get("prompt").As<Napi::String>().Utf8Value() : std::string());
+        systems.push_back(r.Has("system") ? r.Get("system").As<Napi::String>().Utf8Value() : std::string());
+        creqs[i].custom_id = custom_ids.back().c_str();
+        creqs[i].prompt = prompts.back().empty() ? nullptr : prompts.back().c_str();
+        creqs[i].system = systems.back().empty() ? nullptr : systems.back().c_str();
+        creqs[i].max_output_tokens = (r.Has("maxOutputTokens") && r.Get("maxOutputTokens").IsNumber())
+            ? r.Get("maxOutputTokens").As<Napi::Number>().Int32Value() : 0;
+        creqs[i].temperature = (r.Has("temperature") && r.Get("temperature").IsNumber())
+            ? r.Get("temperature").As<Napi::Number>().DoubleValue() : -1.0;
+    }
+
+    ai_batch_result_t result = {};
+    ai_status_t status = ai_batch_run(batch_, creqs.data(), count, poll_ms, &result);
+    if (status != AI_OK) {
+        ai_batch_result_free(&result);
+        Napi::Error::New(env, ai_status_message(status)).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("batchId", Napi::String::New(env, result.batch_id ? result.batch_id : ""));
+    out.Set("status", Napi::String::New(env, result.status ? result.status : "unknown"));
+    Napi::Array items = Napi::Array::New(env, result.count);
+    for (int i = 0; i < result.count; ++i) {
+        Napi::Object it = Napi::Object::New(env);
+        it.Set("customId", Napi::String::New(env, result.items[i].custom_id ? result.items[i].custom_id : ""));
+        it.Set("result", result.items[i].result_json ? Napi::String::New(env, result.items[i].result_json) : env.Null());
+        it.Set("error", result.items[i].error ? Napi::String::New(env, result.items[i].error) : env.Null());
+        items[(uint32_t)i] = it;
+    }
+    out.Set("items", items);
+    ai_batch_result_free(&result);
+    return out;
+}
+
 // --- Module initialization ---
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -557,6 +736,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     ToolSetWrapper::Init(env, exports);
     AgentWrapper::Init(env, exports);
     SessionWrapper::Init(env, exports);
+    MemoryStoreWrapper::Init(env, exports);
+    BatchWrapper::Init(env, exports);
 
     exports.Set("generateText", Napi::Function::New(env, GenerateText));
     exports.Set("streamText", Napi::Function::New(env, StreamText));
