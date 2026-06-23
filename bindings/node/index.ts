@@ -218,11 +218,31 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
   let resolveWait: (() => void) | null = null;
   let finished = false;
 
+  let nativeToolSet: NativeToolSet | undefined;
+  if (opts.tools && opts.tools.length > 0) {
+    nativeToolSet = new native.ToolSet();
+    for (const t of opts.tools) {
+      nativeToolSet.add(t.name, t.description, JSON.stringify(t.schema), async (toolName, inputJson) => {
+        const input = JSON.parse(inputJson);
+        try {
+          const result = await t.execute(input);
+          const output = typeof result === 'string' ? result : JSON.stringify(result);
+          return { output, isError: false };
+        } catch (e: any) {
+          return { output: e.message ?? String(e), isError: true };
+        }
+      });
+    }
+  }
+
   const nativeOpts: NativeGenerateOpts = {
     prompt: opts.prompt,
     system: opts.system,
+    messagesJson: opts.messages ? JSON.stringify(opts.messages) : undefined,
+    maxSteps: opts.maxSteps,
     maxOutputTokens: opts.maxOutputTokens,
     temperature: opts.temperature,
+    toolSet: nativeToolSet,
   };
 
   // native.streamText returns immediately; events arrive asynchronously.
