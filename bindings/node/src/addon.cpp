@@ -777,6 +777,38 @@ Napi::Value WithPermissions(const Napi::CallbackInfo& info) {
     return obj;
 }
 
+// --- MCP ---
+
+Napi::Value MergeToolSets(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected (destToolSet, srcToolSet)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto* dest = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(info[0].As<Napi::Object>());
+    auto* src = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(info[1].As<Napi::Object>());
+    ai_tool_set_merge(dest->handle(), src->handle());
+    return env.Undefined();
+}
+
+Napi::Value McpToolsetFromServer(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected (context, configJson)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto* ctx_wrap = Napi::ObjectWrap<ContextWrapper>::Unwrap(info[0].As<Napi::Object>());
+    std::string config = info[1].As<Napi::String>().Utf8Value();
+    ai_tool_set_t ts = ai_mcp_toolset_from_server(ctx_wrap->handle(), config.c_str());
+    if (!ts) {
+        Napi::Error::New(env, ai_last_error(ctx_wrap->handle())).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Object obj = g_toolset_constructor.New({});
+    Napi::ObjectWrap<ToolSetWrapper>::Unwrap(obj)->SetTools(ts);
+    return obj;
+}
+
 // --- MemoryStore ---
 
 class MemoryStoreWrapper : public Napi::ObjectWrap<MemoryStoreWrapper> {
@@ -942,6 +974,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("streamText", Napi::Function::New(env, StreamText));
     exports.Set("standardToolkit", Napi::Function::New(env, StandardToolkit));
     exports.Set("withPermissions", Napi::Function::New(env, WithPermissions));
+    exports.Set("mergeToolSets", Napi::Function::New(env, MergeToolSets));
+    exports.Set("mcpToolsetFromServer", Napi::Function::New(env, McpToolsetFromServer));
     exports.Set("version", Napi::Function::New(env, GetVersion));
 
     return exports;

@@ -31,6 +31,8 @@ interface NativeBinding {
   standardToolkit(): NativeToolSet;
   withPermissions(tools: NativeToolSet, policy: PermissionPolicy): NativeToolSet;
   version(): string;
+  mergeToolSets(dest: NativeToolSet, src: NativeToolSet): void;
+  mcpToolsetFromServer(ctx: NativeContext, configJson: string): NativeToolSet;
 }
 
 interface NativeSession {
@@ -275,6 +277,7 @@ export class Agent {
     tools: ToolDefinition[];
     instructions?: string;
     maxSteps?: number;
+    extraToolSets?: StandardToolSet[];
   }) {
     const toolSet = new native.ToolSet();
     for (const t of opts.tools) {
@@ -288,6 +291,12 @@ export class Agent {
           return { output: e.message ?? String(e), isError: true };
         }
       });
+    }
+    // Merge in extra tool sets (e.g. MCP tools from mcpToolsetFromServer).
+    if (opts.extraToolSets) {
+      for (const extra of opts.extraToolSets) {
+        native.mergeToolSets(toolSet, extra);
+      }
     }
 
     this._native = new native.Agent(
@@ -314,6 +323,18 @@ export class Agent {
 
 export function version(): string {
   return native.version();
+}
+
+// --- MCP ---
+
+/** Merge `src` tool set into `dest` (e.g. combine custom tools with MCP tools). */
+export function mergeToolSets(dest: StandardToolSet, src: StandardToolSet): void {
+  native.mergeToolSets(dest, src);
+}
+
+/** Connect to an MCP server and return its tools as a ToolSet. */
+export function mcpToolsetFromServer(configJson: string): StandardToolSet {
+  return native.mcpToolsetFromServer(getCtx(), configJson);
 }
 
 // --- Standard toolkit + permissions + session ---
