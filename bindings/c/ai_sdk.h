@@ -217,6 +217,14 @@ typedef struct ai_session* ai_session_t;
 
 /// Create a session that drives `agent` with sliding-window context management.
 ai_session_t ai_session_create(ai_agent_t agent);
+
+/// Create a session whose context is managed by a MemoryContextStrategy: it
+/// auto-injects relevant persisted memory before each turn (MemoryStore +
+/// KeywordRetriever) and auto-compacts near `max_context_tokens` (sliding
+/// window). `memory_dir` is the persistent store location. Memory writes use
+/// ai_memory_save (or the checkpoint writer, when wired).
+ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_dir, int max_context_tokens);
+
 void ai_session_destroy(ai_session_t session);
 
 /// Send a user message through the session; appends the turn to history.

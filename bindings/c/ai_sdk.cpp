@@ -1,5 +1,8 @@
 #include "ai_sdk.h"
 #include <ai/ai.hpp>
+#include <ai/memory/memory.hpp>
+#include <ai/session/context_strategy.hpp>
+#include <ai/util/token_count.hpp>
 #if defined(AI_SDK_PROVIDER_ANTHROPIC)
 #include <ai/providers/anthropic/anthropic.hpp>
 #endif
@@ -668,6 +671,26 @@ struct ai_session {
 ai_session_t ai_session_create(ai_agent_t agent) {
     if (!agent) return nullptr;
     return new ai_session{.session = ai::Session(agent->agent), .ctx = agent->ctx};
+}
+
+ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_dir, int max_context_tokens) {
+    if (!agent || !memory_dir) return nullptr;
+    // MemoryContextStrategy over a sliding window: inject relevant persisted
+    // memory before each turn; the inner SlidingWindowStrategy auto-compacts
+    // (pair-safe) near max_context_tokens.
+    auto store = std::make_shared<ai::memory::MarkdownMemoryStore>(memory_dir);
+    auto retriever = std::make_shared<ai::memory::KeywordRetriever>(*store);
+    auto inner = std::make_shared<ai::SlidingWindowStrategy>();
+    auto strategy = std::make_shared<ai::memory::MemoryContextStrategy>(
+        store, retriever, inner);
+    ai::ContextWindow window{};
+    window.max_tokens = max_context_tokens > 0 ? max_context_tokens : (128 * 1024);
+    window.reserved_output_tokens = 4096;
+    auto counter = std::make_shared<ai::ApproximateTokenCounter>();
+    return new ai_session{
+        .session = ai::Session(agent->agent, window, counter, strategy),
+        .ctx = agent->ctx,
+    };
 }
 
 void ai_session_destroy(ai_session_t session) {

@@ -25,7 +25,7 @@ interface NativeBinding {
   Agent: new (model: NativeModel, tools: NativeToolSet, instructions: string, maxSteps: number) => NativeAgent;
   generateText(model: NativeModel, opts: NativeGenerateOpts): NativeResult;
   streamText(model: NativeModel, opts: NativeGenerateOpts, callback: StreamCallback): void;
-  Session: new (agent: NativeAgent) => NativeSession;
+  Session: new (agent: NativeAgent, memoryDir?: string, maxContextTokens?: number) => NativeSession;
   MemoryStore: new (dir: string) => NativeMemoryStore;
   Batch: new (provider: NativeProvider, modelId: string) => NativeBatch;
   standardToolkit(): NativeToolSet;
@@ -329,11 +329,23 @@ export function withPermissions(tools: StandardToolSet, policy: PermissionPolicy
   return native.withPermissions(tools, policy);
 }
 
+export interface SessionOptions {
+  /** If set, the C++ session uses a MemoryContextStrategy: relevant persisted
+   *  memory is auto-injected before each turn, and history auto-compacts
+   *  (sliding window) near maxContextTokens. */
+  memoryDir?: string;
+  maxContextTokens?: number;
+}
+
 export class Session {
   private _native: NativeSession;
 
-  constructor(agent: Agent) {
-    this._native = new native.Session(agent['_native']);
+  constructor(agent: Agent, opts?: SessionOptions) {
+    if (opts?.memoryDir) {
+      this._native = new native.Session(agent['_native'], opts.memoryDir, opts.maxContextTokens ?? 0);
+    } else {
+      this._native = new native.Session(agent['_native']);
+    }
   }
 
   send(prompt: string): GenerateResult {

@@ -672,12 +672,21 @@ SessionWrapper::SessionWrapper(const Napi::CallbackInfo& info)
     : Napi::ObjectWrap<SessionWrapper>(info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Expected (agent)").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "Expected (agent[, memoryDir, maxContextTokens])").ThrowAsJavaScriptException();
         return;
     }
     auto agent_obj = info[0].As<Napi::Object>();
     auto* agent_wrap = Napi::ObjectWrap<AgentWrapper>::Unwrap(agent_obj);
-    session_ = ai_session_create(agent_wrap->handle());
+    // Optional memory session: (agent, memoryDir, maxContextTokens) ->
+    // MemoryContextStrategy (auto-inject + sliding-window auto-compact).
+    if (info.Length() >= 2 && info[1].IsString()) {
+        std::string dir = info[1].As<Napi::String>().Utf8Value();
+        int max_tokens = (info.Length() >= 3 && info[2].IsNumber())
+            ? info[2].As<Napi::Number>().Int32Value() : 0;
+        session_ = ai_session_create_with_memory(agent_wrap->handle(), dir.c_str(), max_tokens);
+    } else {
+        session_ = ai_session_create(agent_wrap->handle());
+    }
     if (!session_) {
         Napi::Error::New(env, "Failed to create session").ThrowAsJavaScriptException();
     }
