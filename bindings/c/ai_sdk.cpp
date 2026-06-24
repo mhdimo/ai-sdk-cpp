@@ -127,6 +127,8 @@ static ai_status_t consume_stream_to_callback(
                     case ai::FinishReason::ToolCalls: event.finish_reason = "tool_calls"; break;
                     default: event.finish_reason = "other"; break;
                     }
+                    event.input_tokens = p.usage.input_tokens.total.value_or(0);
+                    event.output_tokens = p.usage.output_tokens.total.value_or(0);
                 } else if constexpr (std::is_same_v<T, ai::ReasoningStart>) {
                     event.type = AI_STREAM_REASONING_START;
                 } else if constexpr (std::is_same_v<T, ai::ReasoningDelta>) {

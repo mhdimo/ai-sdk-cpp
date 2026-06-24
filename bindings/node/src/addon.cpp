@@ -435,6 +435,8 @@ struct StreamEventPayload {
     std::string text;
     std::string toolName;
     std::string toolCallId;
+    int inputTokens = 0;
+    int outputTokens = 0;
 };
 
 struct StreamSession {
@@ -450,7 +452,8 @@ static void emit_stream_event(StreamSession& s, const ai_stream_event_t& event) 
         case AI_STREAM_TOOL_CALL_START: p->type = "tool_call_start"; break;
         case AI_STREAM_TOOL_CALL_DELTA: p->type = "tool_call_delta"; break;
         case AI_STREAM_TOOL_CALL_END: p->type = "tool_call_end"; break;
-        case AI_STREAM_FINISH: p->type = "finish"; s.terminal = true; break;
+        case AI_STREAM_FINISH: p->type = "finish"; s.terminal = true;
+            p->inputTokens = event.input_tokens; p->outputTokens = event.output_tokens; break;
         case AI_STREAM_ERROR: p->type = "error"; s.terminal = true; break;
         case AI_STREAM_STEP_FINISH: p->type = "step_finish"; break;
         case AI_STREAM_REASONING_START: p->type = "reasoning_start"; break;
@@ -463,11 +466,19 @@ static void emit_stream_event(StreamSession& s, const ai_stream_event_t& event) 
     if (event.tool_name) p->toolName = event.tool_name;
     if (event.tool_call_id) p->toolCallId = event.tool_call_id;
     s.tsfn.NonBlockingCall(p, [](Napi::Env env, Napi::Function jsCallback, StreamEventPayload* p) {
+        Napi::Value usage = env.Null();
+        if (p->type == "finish") {
+            auto u = Napi::Object::New(env);
+            u.Set("inputTokens", Napi::Number::New(env, p->inputTokens));
+            u.Set("outputTokens", Napi::Number::New(env, p->outputTokens));
+            usage = u;
+        }
         jsCallback.Call({
             Napi::String::New(env, p->type),
             p->text.empty() ? env.Null() : Napi::String::New(env, p->text),
             p->toolName.empty() ? env.Null() : Napi::String::New(env, p->toolName),
             p->toolCallId.empty() ? env.Null() : Napi::String::New(env, p->toolCallId),
+            usage,
         });
         delete p;
     });

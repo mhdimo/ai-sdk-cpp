@@ -57,7 +57,7 @@ interface NativeAgent {
   call(prompt: string): NativeResult;
 }
 type ToolCallback = (toolName: string, inputJson: string) => Promise<{ output: string; isError: boolean }> | { output: string; isError: boolean };
-type StreamCallback = (type: string, text: string | null, toolName: string | null, toolCallId: string | null) => void;
+type StreamCallback = (type: string, text: string | null, toolName: string | null, toolCallId: string | null, usage: { inputTokens: number; outputTokens: number } | null) => void;
 
 interface NativeGenerateOpts {
   prompt?: string;
@@ -208,6 +208,8 @@ export async function generateText(opts: GenerateTextOptions): Promise<GenerateR
 
 export interface StreamEvent {
   type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'reasoning_start' | 'reasoning_delta' | 'reasoning_end' | 'tool_result' | 'step_finish' | 'finish' | 'error';
+  /** Token usage, populated on the finish event. */
+  usage?: { inputTokens: number; outputTokens: number };
   text?: string;
   toolName?: string;
   toolCallId?: string;
@@ -246,11 +248,12 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
   };
 
   // native.streamText returns immediately; events arrive asynchronously.
-  native.streamText(opts.model._native, nativeOpts, (type, text, toolName, toolCallId) => {
+  native.streamText(opts.model._native, nativeOpts, (type, text, toolName, toolCallId, usage) => {
     const event: StreamEvent = { type: type as StreamEvent['type'] };
     if (text) event.text = text;
     if (toolName) event.toolName = toolName;
     if (toolCallId) event.toolCallId = toolCallId;
+    if (usage) event.usage = usage;
     queue.push(event);
     if (type === 'finish' || type === 'error') finished = true;
     if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
@@ -351,11 +354,12 @@ export class Session {
     let resolveWait: (() => void) | null = null;
     let finished = false;
 
-    this._native.sendStream(prompt, (type, text, toolName, toolCallId) => {
+    this._native.sendStream(prompt, (type, text, toolName, toolCallId, usage) => {
       const ev: StreamEvent = { type: type as StreamEvent['type'] };
       if (text) ev.text = text;
       if (toolName) ev.toolName = toolName;
       if (toolCallId) ev.toolCallId = toolCallId;
+      if (usage) ev.usage = usage;
       queue.push(ev);
       if (type === "finish" || type === "error") finished = true;
       if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }

@@ -139,6 +139,8 @@ typedef struct {
     const char* tool_name;      /* for tool events */
     const char* tool_call_id;   /* for tool events */
     const char* finish_reason;  /* for finish events */
+    int input_tokens;           /* token usage (finish event) */
+    int output_tokens;          /* token usage (finish event) */
 } ai_stream_event_t;
 
 typedef void (*ai_stream_callback_fn)(ai_stream_event_t event, void* user_data);
