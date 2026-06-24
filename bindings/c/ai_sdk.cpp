@@ -1,6 +1,7 @@
 #include "ai_sdk.h"
 #include <ai/ai.hpp>
 #include <ai/memory/memory.hpp>
+#include <ai/mcp/mcp_client.hpp>
 #include <ai/session/context_strategy.hpp>
 #include <ai/util/token_count.hpp>
 #include <ai/core/generate_text.hpp>
@@ -940,6 +941,62 @@ ai_status_t ai_memory_save(ai_memory_store_t store, const char* scope,
         return AI_OK;
     } catch (const std::exception& e) {
         return AI_ERROR_INTERNAL;
+    }
+}
+
+// --- MCP ---
+
+void ai_tool_set_merge(ai_tool_set_t dest, ai_tool_set_t src) {
+    if (!dest || !src) return;
+    for (auto& [name, tool] : src->tools) {
+        dest->tools.add(ai::ToolDefinition(tool));
+    }
+}
+
+ai_tool_set_t ai_mcp_toolset_from_server(ai_context_t ctx, const char* config_json) {
+    if (!ctx || !config_json) return nullptr;
+    try {
+        auto parsed = ai::json::safe_parse(config_json);
+        if (!parsed || !parsed->is_object()) {
+            ctx->last_error = "Invalid MCP config JSON";
+            return nullptr;
+        }
+        auto& o = parsed->as_object();
+
+        ai::mcp::McpServerConfig cfg;
+        cfg.transport = (o.contains("transport") && o["transport"].is_string())
+            ? std::string(o["transport"].as_string()) : "stdio";
+        if (o.contains("command") && o["command"].is_string())
+            cfg.command = std::string(o["command"].as_string());
+        if (o.contains("args") && o["args"].is_array())
+            for (auto& a : o["args"].as_array())
+                if (a.is_string()) cfg.args.push_back(std::string(a.as_string()));
+        if (o.contains("url") && o["url"].is_string())
+            cfg.url = std::string(o["url"].as_string());
+        if (o.contains("env") && o["env"].is_object())
+            for (auto& [k, v] : o["env"].as_object())
+                if (v.is_string()) cfg.env[k] = std::string(v.as_string());
+        if (o.contains("headers") && o["headers"].is_object())
+            for (auto& [k, v] : o["headers"].as_object())
+                if (v.is_string()) cfg.headers[k] = std::string(v.as_string());
+
+        auto client = std::make_shared<ai::mcp::McpClient>(cfg);
+        auto t = client->connect();
+        t.start();
+        while (!t.done()) ctx->ioc.run_one();
+        t.get();  // throws on connect failure
+
+        // List tools (async, drive on ioc).
+        auto lt = client->list_tools();
+        lt.start();
+        while (!lt.done()) ctx->ioc.run_one();
+        auto mcp_tools = lt.get();
+
+        auto tools = ai::mcp::mcp_tools_to_toolset(client, mcp_tools);
+        return new ai_tool_set{ .tools = std::move(tools) };
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
     }
 }
 

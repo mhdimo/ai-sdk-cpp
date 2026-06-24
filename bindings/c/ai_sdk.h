@@ -269,6 +269,18 @@ ai_status_t ai_memory_save(ai_memory_store_t store, const char* scope,
                            const char* key, const char* content);
 
 /* --------------------------------------------------------------------------
+ * MCP — connect to external tool servers + merge their tools.
+ * -------------------------------------------------------------------------- */
+
+/// Merge `src` tool definitions into `dest` (e.g. combine custom + MCP tools).
+void ai_tool_set_merge(ai_tool_set_t dest, ai_tool_set_t src);
+
+/// Connect to an MCP server described by `config_json` and return its tools as
+/// a ToolSet. config_json fields: transport ("stdio"|"http"), command, args[],
+/// env{}, url, headers{}. Returns NULL on failure (see ai_last_error).
+ai_tool_set_t ai_mcp_toolset_from_server(ai_context_t ctx, const char* config_json);
+
+/* --------------------------------------------------------------------------
  * Utility
  * -------------------------------------------------------------------------- */
 
