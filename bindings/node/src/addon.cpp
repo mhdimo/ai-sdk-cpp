@@ -274,11 +274,12 @@ ToolSetWrapper::ToolSetWrapper(const Napi::CallbackInfo& info)
 
 ToolSetWrapper::~ToolSetWrapper() {
     if (tools_) ai_tool_set_destroy(tools_);
-    for (auto* cb : tool_callbacks_) {
-        cb->tsfn.Release();
-        delete cb;
-    }
-    tool_callbacks_.clear();
+    // NOTE: ToolCallbackData (TSFN + callback) is intentionally NOT freed here.
+    // The agent's copy of the ToolSet references the same ToolCallbackData via
+    // the execute function's user_data pointer. Freeing it would cause a
+    // use-after-free (SIGTRAP) when the agent calls a tool after this wrapper
+    // is GC'd. The data lives for the process lifetime (bounded: one per tool
+    // per session creation — acceptable for a long-running agent).
 }
 
 void ToolSetWrapper::AddTool(const Napi::CallbackInfo& info) {

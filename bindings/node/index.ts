@@ -271,6 +271,7 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
 
 export class Agent {
   private _native: NativeAgent;
+  private _toolSet: any;  // prevent GC — the C++ agent references the tool callbacks
 
   constructor(opts: {
     model: Model;
@@ -299,6 +300,7 @@ export class Agent {
       }
     }
 
+    this._toolSet = toolSet;  // prevent GC of the ToolSet wrapper
     this._native = new native.Agent(
       opts.model._native,
       toolSet,
