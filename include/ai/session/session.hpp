@@ -130,6 +130,10 @@ public:
     /// turn via send_stream + add_assistant). Best-effort: errors swallowed.
     Task<void> fire_turn_finish();
 
+    /// Increment the turn counter (for send_stream callers that manually append
+    /// turns — the checkpoint writer uses this to decide when to persist).
+    void increment_turn() { ++metadata_.turns; }
+
 private:
     Agent* agent_;
     ContextWindow window_;

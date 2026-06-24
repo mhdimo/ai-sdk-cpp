@@ -875,6 +875,7 @@ ai_status_t ai_session_send_stream(
         }
 
         append_turn_messages(session->session, gen_result);
+        session->session.increment_turn();
 
         // Fire the post-turn hook (e.g. checkpoint writer) — best-effort.
         {
