@@ -53,6 +53,9 @@ public:
         CancellationToken cancel = {}
     ) override;
 
+    /// The model this agent uses (for e.g. checkpoint summarizers).
+    LanguageModelPtr model() const { return options_.model; }
+
 private:
     ToolLoopAgentOptions options_;
 };

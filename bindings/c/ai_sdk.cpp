@@ -3,6 +3,7 @@
 #include <ai/memory/memory.hpp>
 #include <ai/session/context_strategy.hpp>
 #include <ai/util/token_count.hpp>
+#include <ai/core/generate_text.hpp>
 #if defined(AI_SDK_PROVIDER_ANTHROPIC)
 #include <ai/providers/anthropic/anthropic.hpp>
 #endif
@@ -687,10 +688,38 @@ ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_
     window.max_tokens = max_context_tokens > 0 ? max_context_tokens : (128 * 1024);
     window.reserved_output_tokens = 4096;
     auto counter = std::make_shared<ai::ApproximateTokenCounter>();
-    return new ai_session{
-        .session = ai::Session(agent->agent, window, counter, strategy),
-        .ctx = agent->ctx,
-    };
+    ai::Session session(agent->agent, window, counter, strategy);
+
+    // Auto-checkpoint: every 5 turns, summarize the conversation into a memory
+    // record (the "continuously improves itself" loop). Best-effort.
+    if (agent->agent.model()) {
+        auto summarizer = [model = agent->agent.model()](const ai::Prompt& history) -> ai::Task<std::string> {
+            ai::GenerateTextOptions o;
+            o.model = model;
+            o.system = "Summarize the conversation so far into a concise checkpoint: "
+                       "key decisions, current state, and next steps.";
+            std::string transcript;
+            for (auto& m : history) {
+                std::visit([&](auto&& msg) {
+                    using T = std::decay_t<decltype(msg)>;
+                    if constexpr (std::is_same_v<T, ai::UserMessage>) {
+                        for (auto& p : msg.content)
+                            if (auto* t = std::get_if<ai::TextPart>(&p)) transcript += "User: " + t->text + "\n";
+                    } else if constexpr (std::is_same_v<T, ai::AssistantMessage>) {
+                        for (auto& p : msg.content)
+                            if (auto* t = std::get_if<ai::TextPart>(&p)) transcript += "Assistant: " + t->text + "\n";
+                    }
+                }, m);
+            }
+            o.prompt = transcript;
+            auto r = co_await ai::generate_text(std::move(o));
+            co_return r.text;
+        };
+        session.set_on_turn_finish(
+            ai::memory::make_checkpoint_writer(store, summarizer, 5));
+    }
+
+    return new ai_session{ .session = std::move(session), .ctx = agent->ctx };
 }
 
 void ai_session_destroy(ai_session_t session) {
@@ -845,6 +874,14 @@ ai_status_t ai_session_send_stream(
         }
 
         append_turn_messages(session->session, gen_result);
+
+        // Fire the post-turn hook (e.g. checkpoint writer) — best-effort.
+        {
+            auto hook = session->session.fire_turn_finish();
+            hook.start();
+            while (!hook.done()) ctx->ioc.run_one();
+            try { hook.get(); } catch (...) {}
+        }
 
         return AI_OK;
     } catch (const std::exception& e) {

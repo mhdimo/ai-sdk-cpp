@@ -215,6 +215,17 @@ Task<GenerateTextResult> Session::send(
     co_return result;
 }
 
+Task<void> Session::fire_turn_finish() {
+    if (on_turn_finish_) {
+        try {
+            co_await on_turn_finish_(*this);
+        } catch (...) {
+            // A hook failure must not break the caller.
+        }
+    }
+    co_return;
+}
+
 Task<StreamTextResult> Session::send_stream(
     std::string user_msg,
     CancellationToken cancel

@@ -126,6 +126,10 @@ public:
         on_turn_finish_ = std::move(hook);
     }
 
+    /// Manually fire the on_turn_finish hook (e.g. after appending a streamed
+    /// turn via send_stream + add_assistant). Best-effort: errors swallowed.
+    Task<void> fire_turn_finish();
+
 private:
     Agent* agent_;
     ContextWindow window_;
