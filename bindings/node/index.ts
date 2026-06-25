@@ -257,7 +257,12 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
     if (toolCallId) event.toolCallId = toolCallId;
     if (usage) event.usage = usage;
     queue.push(event);
-    if (type === 'finish' || type === 'error') finished = true;
+    if (type === 'finish' || type === 'error') {
+      finished = true;
+      // The C binding emits tool-call-result events AFTER the stream finishes.
+      // Brief wait for them to arrive before the generator exits.
+      setTimeout(() => { if (resolveWait) { const r = resolveWait; resolveWait = null; r(); } }, 200);
+    }
     if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
   });
 
@@ -396,7 +401,10 @@ export class Session {
       if (toolCallId) ev.toolCallId = toolCallId;
       if (usage) ev.usage = usage;
       queue.push(ev);
-      if (type === "finish" || type === "error") finished = true;
+      if (type === "finish" || type === "error") {
+        finished = true;
+        setTimeout(() => { if (resolveWait) { const r = resolveWait; resolveWait = null; r(); } }, 200);
+      }
       if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
     });
 
