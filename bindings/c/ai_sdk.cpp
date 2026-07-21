@@ -101,13 +101,16 @@ static ai_status_t consume_stream_to_callback(
     boost::asio::io_context& ioc,
     ai_stream_callback_fn cb,
     void* ud,
-    ai_context* ctx
+    ai_context* ctx,
+    bool skip_final_finish = false
 ) {
     auto consume = [](ai::AsyncGenerator<ai::StreamPart> s,
                       ai_stream_callback_fn callback,
-                      void* user_data) -> ai::Task<void> {
+                      void* user_data,
+                      bool skip_final_finish) -> ai::Task<void> {
         while (auto part = co_await s.next()) {
             ai_stream_event_t event{};
+            bool should_emit = true;
             std::visit([&](auto&& p) {
                 using T = std::decay_t<decltype(p)>;
                 if constexpr (std::is_same_v<T, ai::TextDelta>) {
@@ -125,6 +128,10 @@ static ai_status_t consume_stream_to_callback(
                     event.type = AI_STREAM_TOOL_CALL_END;
                     event.tool_call_id = p.id.c_str();
                 } else if constexpr (std::is_same_v<T, ai::FinishPart>) {
+                    if (skip_final_finish && p.reason != ai::FinishReason::ToolCalls) {
+                        should_emit = false;
+                        return;
+                    }
                     event.type = AI_STREAM_FINISH;
                     switch (p.reason) {
                     case ai::FinishReason::Stop: event.finish_reason = "stop"; break;
@@ -147,9 +154,11 @@ static ai_status_t consume_stream_to_callback(
                     throw ai::error::StreamError(p.message);
                 }
             }, *part);
-            callback(event, user_data);
+            if (should_emit) {
+                callback(event, user_data);
+            }
         }
-    }(std::move(stream), cb, ud);
+    }(std::move(stream), cb, ud, skip_final_finish);
 
     try {
         consume.start();
@@ -675,7 +684,7 @@ ai_session_t ai_session_create(ai_agent_t agent) {
     return new ai_session{.session = ai::Session(agent->agent), .ctx = agent->ctx};
 }
 
-ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_dir, int max_context_tokens) {
+ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_dir, int max_context_tokens, int enable_checkpoint) {
     if (!agent || !memory_dir) return nullptr;
     // MemoryContextStrategy over a sliding window: inject relevant persisted
     // memory before each turn; the inner SlidingWindowStrategy auto-compacts
@@ -693,7 +702,9 @@ ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_
 
     // Auto-checkpoint: every 5 turns, summarize the conversation into a memory
     // record (the "continuously improves itself" loop). Best-effort.
-    if (agent->agent.model()) {
+    // Opt-in via `enable_checkpoint` — callers that don't want the extra API
+    // call (e.g. DeepSeek Code) can pass 0.
+    if (enable_checkpoint && agent->agent.model()) {
         auto summarizer = [model = agent->agent.model()](const ai::Prompt& history) -> ai::Task<std::string> {
             ai::GenerateTextOptions o;
             o.model = model;
@@ -846,7 +857,7 @@ ai_status_t ai_session_send_stream(
         auto result = outer.get();
 
         auto status = consume_stream_to_callback(
-            std::move(result.stream), ctx->ioc, callback, user_data, ctx);
+            std::move(result.stream), ctx->ioc, callback, user_data, ctx, true);
         if (status != AI_OK) return status;
 
         auto full_result_task = std::move(result.full_result);
@@ -885,11 +896,43 @@ ai_status_t ai_session_send_stream(
             try { hook.get(); } catch (...) {}
         }
 
+        // Dispatch final finish event
+        ai_stream_event_t finish_event{};
+        finish_event.type = AI_STREAM_FINISH;
+        switch (gen_result.finish_reason) {
+        case ai::FinishReason::Stop: finish_event.finish_reason = "stop"; break;
+        case ai::FinishReason::Length: finish_event.finish_reason = "length"; break;
+        case ai::FinishReason::ToolCalls: finish_event.finish_reason = "tool_calls"; break;
+        default: finish_event.finish_reason = "other"; break;
+        }
+        finish_event.input_tokens = gen_result.usage.input_tokens.total.value_or(0);
+        finish_event.output_tokens = gen_result.usage.output_tokens.total.value_or(0);
+        callback(finish_event, user_data);
+
         return AI_OK;
     } catch (const std::exception& e) {
         return map_exception(ctx, e);
     }
 }
+
+void ai_session_add_user(ai_session_t session, const char* text) {
+    if (session && text) {
+        session->session.add_user(std::string(text));
+    }
+}
+
+void ai_session_add_assistant(ai_session_t session, const char* text) {
+    if (session && text) {
+        session->session.add_assistant(std::string(text));
+    }
+}
+
+void ai_session_set_system(ai_session_t session, const char* text) {
+    if (session && text) {
+        session->session.set_system(std::string(text));
+    }
+}
+
 
 
 ai_tool_set_t ai_standard_toolkit_create(void) {

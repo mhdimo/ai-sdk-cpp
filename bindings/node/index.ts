@@ -25,7 +25,7 @@ interface NativeBinding {
   Agent: new (model: NativeModel, tools: NativeToolSet, instructions: string, maxSteps: number) => NativeAgent;
   generateText(model: NativeModel, opts: NativeGenerateOpts): NativeResult;
   streamText(model: NativeModel, opts: NativeGenerateOpts, callback: StreamCallback): void;
-  Session: new (agent: NativeAgent, memoryDir?: string, maxContextTokens?: number) => NativeSession;
+  Session: new (agent: NativeAgent, opts?: NativeSessionOptions) => NativeSession;
   MemoryStore: new (dir: string) => NativeMemoryStore;
   Batch: new (provider: NativeProvider, modelId: string) => NativeBatch;
   standardToolkit(): NativeToolSet;
@@ -35,9 +35,18 @@ interface NativeBinding {
   mcpToolsetFromServer(ctx: NativeContext, configJson: string): NativeToolSet;
 }
 
+interface NativeSessionOptions {
+  memoryDir?: string;
+  maxContextTokens?: number;
+  enableCheckpoint?: boolean;
+}
+
 interface NativeSession {
   send(prompt: string): NativeResult;
   sendStream(prompt: string, callback: StreamCallback): void;
+  addUser(text: string): void;
+  addAssistant(text: string): void;
+  setSystem(text: string): void;
 }
 
 interface NativeMemoryStore {
@@ -257,7 +266,7 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
     if (toolCallId) event.toolCallId = toolCallId;
     if (usage) event.usage = usage;
     queue.push(event);
-    if (type === 'finish' || type === 'error') {
+    if ((type === 'finish' && (usage as any)?.finishReason !== 'tool_calls') || type === 'error') {
       finished = true;
       // The C binding emits tool-call-result events AFTER the stream finishes.
       // Brief wait for them to arrive before the generator exits.
@@ -363,14 +372,24 @@ export interface SessionOptions {
    *  (sliding window) near maxContextTokens. */
   memoryDir?: string;
   maxContextTokens?: number;
+  /** Auto-checkpoint the conversation into memory every 5 turns.
+   *  This calls the model to summarize history — costs an extra API call.
+   *  Default true for backward compatibility. Set to false if you don't
+   *  need automatic memory improvement or want to avoid extra API calls. */
+  enableCheckpoint?: boolean;
 }
 
 export class Session {
   private _native: NativeSession;
+  private _activePromise: Promise<void> | null = null;
 
   constructor(agent: Agent, opts?: SessionOptions) {
     if (opts?.memoryDir) {
-      this._native = new native.Session(agent['_native'], opts.memoryDir, opts.maxContextTokens ?? 0);
+      this._native = new native.Session(agent['_native'], {
+        memoryDir: opts.memoryDir,
+        maxContextTokens: opts.maxContextTokens ?? 0,
+        enableCheckpoint: opts.enableCheckpoint ?? true,
+      });
     } else {
       this._native = new native.Session(agent['_native']);
     }
@@ -386,10 +405,28 @@ export class Session {
     };
   }
 
+  addUser(text: string): void {
+    this._native.addUser(text);
+  }
+
+  addAssistant(text: string): void {
+    this._native.addAssistant(text);
+  }
+
+  setSystem(text: string): void {
+    this._native.setSystem(text);
+  }
+
   /** Stream a session turn as an async iterable of events. Non-blocking: the
    *  native stream runs on a background thread; events are delivered on the JS
    *  event loop, so the UI (e.g. Ink) stays responsive. */
   async *sendStream(prompt: string): AsyncGenerator<StreamEvent> {
+    if (this._activePromise) {
+      await this._activePromise;
+    }
+    let resolveActive: any = null;
+    this._activePromise = new Promise<void>((r) => { resolveActive = r; });
+
     const queue: StreamEvent[] = [];
     let resolveWait: (() => void) | null = null;
     let finished = false;
@@ -401,18 +438,27 @@ export class Session {
       if (toolCallId) ev.toolCallId = toolCallId;
       if (usage) ev.usage = usage;
       queue.push(ev);
-      if (type === "finish" || type === "error") {
+      if ((type === "finish" && (usage as any)?.finishReason !== "tool_calls") || type === "error") {
         finished = true;
-        setTimeout(() => { if (resolveWait) { const r = resolveWait; resolveWait = null; r(); } }, 200);
+        setTimeout(() => {
+          if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
+          if (resolveActive) { resolveActive(); }
+        }, 200);
       }
       if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
     });
 
-    while (!finished || queue.length > 0) {
-      if (queue.length === 0) {
-        await new Promise<void>((r) => { resolveWait = r; });
+    try {
+      while (!finished || queue.length > 0) {
+        if (queue.length === 0) {
+          await new Promise<void>((r) => { resolveWait = r; });
+        }
+        while (queue.length > 0) yield queue.shift()!;
       }
-      while (queue.length > 0) yield queue.shift()!;
+    } finally {
+      if (finished && resolveActive) {
+        resolveActive();
+      }
     }
   }
 }

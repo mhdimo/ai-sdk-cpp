@@ -135,10 +135,24 @@ public:
 /// `## Earlier in this session` message kept immediately after the system
 /// prompt, and keeps the last `kept_turns` turns verbatim. If `summarizer`
 /// is null it degrades to plain sliding-window behavior.
+///
+/// Compaction is proactive: it triggers when the history reaches
+/// `compaction_threshold` of the available window (default 0.7 = 70%), not
+/// when the window is already full. After compaction the strategy targets
+/// `target_utilization` of the window (default 0.5 = 50%), creating enough
+/// headroom that subsequent turns don't re-trigger summarization every turn.
+/// This mirrors Claude Code's auto-compact behavior: compact once,
+/// aggressively, then go many turns without re-compacting.
 class SummarizationStrategy : public ContextStrategy {
 public:
-    explicit SummarizationStrategy(std::size_t kept_turns = 4)
-        : kept_turns_(kept_turns) {}
+    explicit SummarizationStrategy(
+        std::size_t kept_turns = 4,
+        double compaction_threshold = 0.7,
+        double target_utilization = 0.5
+    )
+        : kept_turns_(kept_turns),
+          compaction_threshold_(compaction_threshold),
+          target_utilization_(target_utilization) {}
 
     Task<Prompt> manage(
         Prompt history,
@@ -149,6 +163,8 @@ public:
 
 private:
     std::size_t kept_turns_;
+    double compaction_threshold_;
+    double target_utilization_;
 };
 
 } // namespace ai

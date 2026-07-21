@@ -223,7 +223,7 @@ ai_session_t ai_session_create(ai_agent_t agent);
 /// KeywordRetriever) and auto-compacts near `max_context_tokens` (sliding
 /// window). `memory_dir` is the persistent store location. Memory writes use
 /// ai_memory_save (or the checkpoint writer, when wired).
-ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_dir, int max_context_tokens);
+ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_dir, int max_context_tokens, int enable_checkpoint);
 
 void ai_session_destroy(ai_session_t session);
 
@@ -234,6 +234,10 @@ ai_status_t ai_session_send(ai_session_t session, const char* prompt, ai_generat
 /// Streaming variant of session send. Drives the stream and automatically
 /// appends the resulting assistant response & tool metrics back into the session history.
 ai_status_t ai_session_send_stream(ai_session_t session, const char* prompt, ai_stream_callback_fn callback, void* user_data);
+
+void ai_session_add_user(ai_session_t session, const char* text);
+void ai_session_add_assistant(ai_session_t session, const char* text);
+void ai_session_set_system(ai_session_t session, const char* text);
 
 /* --------------------------------------------------------------------------
  * Standard toolkit + permission gating

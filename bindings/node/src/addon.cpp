@@ -436,6 +436,7 @@ struct StreamEventPayload {
     std::string text;
     std::string toolName;
     std::string toolCallId;
+    std::string finishReason;
     int inputTokens = 0;
     int outputTokens = 0;
 };
@@ -453,8 +454,11 @@ static void emit_stream_event(StreamSession& s, const ai_stream_event_t& event) 
         case AI_STREAM_TOOL_CALL_START: p->type = "tool_call_start"; break;
         case AI_STREAM_TOOL_CALL_DELTA: p->type = "tool_call_delta"; break;
         case AI_STREAM_TOOL_CALL_END: p->type = "tool_call_end"; break;
-        case AI_STREAM_FINISH: p->type = "finish"; s.terminal = true;
-            p->inputTokens = event.input_tokens; p->outputTokens = event.output_tokens; break;
+        case AI_STREAM_FINISH: p->type = "finish";
+            p->inputTokens = event.input_tokens; p->outputTokens = event.output_tokens;
+            if (event.finish_reason) p->finishReason = event.finish_reason;
+            if (p->finishReason != "tool_calls") s.terminal = true;
+            break;
         case AI_STREAM_ERROR: p->type = "error"; s.terminal = true; break;
         case AI_STREAM_STEP_FINISH: p->type = "step_finish"; break;
         case AI_STREAM_REASONING_START: p->type = "reasoning_start"; break;
@@ -472,6 +476,7 @@ static void emit_stream_event(StreamSession& s, const ai_stream_event_t& event) 
             auto u = Napi::Object::New(env);
             u.Set("inputTokens", Napi::Number::New(env, p->inputTokens));
             u.Set("outputTokens", Napi::Number::New(env, p->outputTokens));
+            u.Set("finishReason", Napi::String::New(env, p->finishReason));
             usage = u;
         }
         jsCallback.Call({
@@ -655,6 +660,9 @@ public:
     ~SessionWrapper();
     Napi::Value Send(const Napi::CallbackInfo& info);
     Napi::Value SendStream(const Napi::CallbackInfo& info);
+    Napi::Value AddUser(const Napi::CallbackInfo& info);
+    Napi::Value AddAssistant(const Napi::CallbackInfo& info);
+    Napi::Value SetSystem(const Napi::CallbackInfo& info);
 
 private:
     ai_session_t session_;
@@ -664,6 +672,9 @@ Napi::Object SessionWrapper::Init(Napi::Env env, Napi::Object exports) {
     Napi::Function func = DefineClass(env, "Session", {
         InstanceMethod("send", &SessionWrapper::Send),
         InstanceMethod("sendStream", &SessionWrapper::SendStream),
+        InstanceMethod("addUser", &SessionWrapper::AddUser),
+        InstanceMethod("addAssistant", &SessionWrapper::AddAssistant),
+        InstanceMethod("setSystem", &SessionWrapper::SetSystem),
     });
     exports.Set("Session", func);
     return exports;
@@ -673,18 +684,45 @@ SessionWrapper::SessionWrapper(const Napi::CallbackInfo& info)
     : Napi::ObjectWrap<SessionWrapper>(info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1) {
-        Napi::TypeError::New(env, "Expected (agent[, memoryDir, maxContextTokens])").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "Expected (agent[, opts])").ThrowAsJavaScriptException();
         return;
     }
     auto agent_obj = info[0].As<Napi::Object>();
     auto* agent_wrap = Napi::ObjectWrap<AgentWrapper>::Unwrap(agent_obj);
-    // Optional memory session: (agent, memoryDir, maxContextTokens) ->
-    // MemoryContextStrategy (auto-inject + sliding-window auto-compact).
-    if (info.Length() >= 2 && info[1].IsString()) {
+
+    // Options object: (agent, { memoryDir?, maxContextTokens?, enableCheckpoint? })
+    if (info.Length() >= 2 && info[1].IsObject()) {
+        auto opts = info[1].As<Napi::Object>();
+        std::string dir;
+        int max_tokens = 0;
+        int enable_checkpoint = 1;  // default: enabled (backward compat)
+
+        if (opts.Has("memoryDir")) {
+            auto v = opts.Get("memoryDir");
+            if (v.IsString()) dir = v.As<Napi::String>().Utf8Value();
+        }
+        if (opts.Has("maxContextTokens")) {
+            auto v = opts.Get("maxContextTokens");
+            if (v.IsNumber()) max_tokens = v.As<Napi::Number>().Int32Value();
+        }
+        if (opts.Has("enableCheckpoint")) {
+            auto v = opts.Get("enableCheckpoint");
+            if (v.IsBoolean()) enable_checkpoint = v.As<Napi::Boolean>().Value() ? 1 : 0;
+        }
+
+        if (!dir.empty()) {
+            session_ = ai_session_create_with_memory(
+                agent_wrap->handle(), dir.c_str(), max_tokens, enable_checkpoint);
+        } else {
+            session_ = ai_session_create(agent_wrap->handle());
+        }
+    // Legacy positional: (agent, memoryDir, maxContextTokens)
+    } else if (info.Length() >= 2 && info[1].IsString()) {
         std::string dir = info[1].As<Napi::String>().Utf8Value();
         int max_tokens = (info.Length() >= 3 && info[2].IsNumber())
             ? info[2].As<Napi::Number>().Int32Value() : 0;
-        session_ = ai_session_create_with_memory(agent_wrap->handle(), dir.c_str(), max_tokens);
+        session_ = ai_session_create_with_memory(
+            agent_wrap->handle(), dir.c_str(), max_tokens, /*enable_checkpoint=*/1);
     } else {
         session_ = ai_session_create(agent_wrap->handle());
     }
@@ -737,6 +775,39 @@ Napi::Value SessionWrapper::SendStream(const Napi::CallbackInfo& info) {
             ai_session_send_stream(session, prompt.c_str(), cb, s);
         });
 
+    return env.Undefined();
+}
+
+Napi::Value SessionWrapper::AddUser(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected (text)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string text = info[0].As<Napi::String>().Utf8Value();
+    ai_session_add_user(session_, text.c_str());
+    return env.Undefined();
+}
+
+Napi::Value SessionWrapper::AddAssistant(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected (text)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string text = info[0].As<Napi::String>().Utf8Value();
+    ai_session_add_assistant(session_, text.c_str());
+    return env.Undefined();
+}
+
+Napi::Value SessionWrapper::SetSystem(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected (text)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::string text = info[0].As<Napi::String>().Utf8Value();
+    ai_session_set_system(session_, text.c_str());
     return env.Undefined();
 }
 

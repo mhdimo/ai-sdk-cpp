@@ -127,7 +127,16 @@ Task<Prompt> SummarizationStrategy::manage(
     Summarizer& summarizer
 ) {
     const int available = window.available_input_tokens();
-    if (static_cast<int>(counter.count_messages_tokens(history)) <= available) {
+    const int current_tokens =
+        static_cast<int>(counter.count_messages_tokens(history));
+
+    // Proactive threshold: compact at `compaction_threshold_` of the window
+    // (default 70%), not when the window is already full. This mirrors Claude
+    // Code's auto-compact behavior — compact early so the next several turns
+    // don't immediately re-trigger summarization.
+    const int compact_at =
+        static_cast<int>(available * compaction_threshold_);
+    if (current_tokens <= compact_at) {
         co_return history;
     }
 
@@ -160,6 +169,41 @@ Task<Prompt> SummarizationStrategy::manage(
     }
     if (kept_start < system_count) {
         kept_start = system_count;
+    }
+
+    // Compact more aggressively than the bare minimum: after reserving
+    // `kept_turns_` as the floor, try to evict additional turns to get
+    // below `target_utilization_` of the window. This creates headroom so
+    // the next several turns don't re-trigger summarization — the same
+    // "compact once, go many turns" approach Claude Code uses.
+    //
+    // The overhead estimate accounts for the summary message itself plus
+    // any bookkeeping, scaled relative to available tokens so it works
+    // across the full range of context windows.
+    const int target_tokens =
+        static_cast<int>(available * target_utilization_);
+    const int kSummaryOverhead =
+        std::max(100, static_cast<int>(available * 0.02));
+    while (kept_start < history.size()) {
+        // Must always preserve at least 1 turn unit for the model to
+        // have conversational context.
+        std::size_t next = turn_unit_end(history, kept_start);
+        if (next <= kept_start || next >= history.size()) break;
+        // Count what would remain after evicting this unit.
+        Prompt tentative(history.begin(),
+                         history.begin() + system_count);
+        for (std::size_t i = next; i < history.size(); ++i) {
+            tentative.push_back(history[i]);
+        }
+        int tentative_tokens =
+            static_cast<int>(counter.count_messages_tokens(tentative))
+            + kSummaryOverhead;
+        if (tentative_tokens <= target_tokens) {
+            // Evict this unit — the tail still fits under target.
+            kept_start = next;
+        } else {
+            break; // can't evict more without dipping below floor
+        }
     }
 
     // The evicted middle region is what we summarize.
