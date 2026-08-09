@@ -77,6 +77,7 @@ interface NativeGenerateOpts {
   maxSteps?: number;
   maxOutputTokens?: number;
   temperature?: number;
+  providerOptions?: Record<string, Record<string, unknown>>;
   toolSet?: NativeToolSet;
 }
 
@@ -160,6 +161,7 @@ export interface GenerateTextOptions {
   maxSteps?: number;
   maxOutputTokens?: number;
   temperature?: number;
+  providerOptions?: Record<string, Record<string, unknown>>;
 }
 
 export interface GenerateResult {
@@ -197,6 +199,7 @@ export async function generateText(opts: GenerateTextOptions): Promise<GenerateR
     maxSteps: opts.maxSteps,
     maxOutputTokens: opts.maxOutputTokens,
     temperature: opts.temperature,
+    providerOptions: opts.providerOptions,
     toolSet: nativeToolSet,
   };
 
@@ -255,6 +258,7 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
     maxSteps: opts.maxSteps,
     maxOutputTokens: opts.maxOutputTokens,
     temperature: opts.temperature,
+    providerOptions: opts.providerOptions,
     toolSet: nativeToolSet,
   };
 

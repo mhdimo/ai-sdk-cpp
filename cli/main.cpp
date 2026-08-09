@@ -8,6 +8,9 @@
 #if defined(AI_SDK_PROVIDER_BEDROCK)
 #include <ai/providers/bedrock/bedrock.hpp>
 #endif
+#if defined(AI_SDK_PROVIDER_DEEPSEEK)
+#include <ai/providers/deepseek/deepseek.hpp>
+#endif
 #include <boost/asio.hpp>
 #include <iostream>
 #include <string>
@@ -183,23 +186,23 @@ struct InputResult {
 
 InputResult read_input(Terminal& term) {
     int c = term.read_byte();
-    if (c < 0) return {InputEvent::Eof};
+    if (c < 0) return {.event=InputEvent::Eof};
 
-    if (c == 4) return {InputEvent::Eof}; // Ctrl+D
-    if (c == 3) return {InputEvent::Eof}; // Ctrl+C
+    if (c == 4) return {.event=InputEvent::Eof}; // Ctrl+D
+    if (c == 3) return {.event=InputEvent::Eof}; // Ctrl+C
 
     if (c == '\x1b') {
         int next = term.read_byte(50);
-        if (next < 0) return {InputEvent::None}; // bare Escape
+        if (next < 0) return {.event=InputEvent::None}; // bare Escape
 
         if (next == '[') {
             auto seq = term.read_csi();
             // Shift+Enter via Kitty protocol: CSI 13;2u
-            if (seq == "13;2u") return {InputEvent::Newline};
+            if (seq == "13;2u") return {.event=InputEvent::Newline};
             // Ctrl+Enter: CSI 13;5u
-            if (seq == "13;5u") return {InputEvent::Newline};
+            if (seq == "13;5u") return {.event=InputEvent::Newline};
             // Shift+Enter via xterm modifyOtherKeys: CSI 27;2;13~
-            if (seq == "27;2;13~") return {InputEvent::Newline};
+            if (seq == "27;2;13~") return {.event=InputEvent::Newline};
             // Bracketed paste start: CSI 200~
             if (seq == "200~") {
                 std::string paste;
@@ -268,7 +271,7 @@ int main(int argc, char* argv[]) {
         if (arg == "--cwd" && i + 1 < argc) {
             g_cwd = fs::absolute(argv[++i]).string();
         } else if (provider_name == "anthropic" && model_name == "claude-sonnet-4-20250514") {
-            if (arg == "anthropic" || arg == "openai" || arg == "bedrock") {
+            if (arg == "anthropic" || arg == "openai" || arg == "bedrock" || arg == "deepseek") {
                 provider_name = arg;
             } else {
                 model_name = arg;
@@ -300,6 +303,13 @@ int main(int argc, char* argv[]) {
         provider_instance = ai::providers::bedrock::create_bedrock({.io_context = ioc});
 #else
         std::cerr << "Bedrock provider is not built.\n";
+        return 1;
+#endif
+    } else if (provider_name == "deepseek") {
+#if defined(AI_SDK_PROVIDER_DEEPSEEK)
+        provider_instance = ai::providers::deepseek::create_deepseek({.io_context = ioc});
+#else
+        std::cerr << "DeepSeek provider is not built.\n";
         return 1;
 #endif
     } else {

@@ -534,7 +534,7 @@ Napi::Value GenerateText(const Napi::CallbackInfo& info) {
     opts.model = model_wrap->handle();
     opts.temperature = -1;
 
-    std::string prompt_str, system_str, messages_str;
+    std::string prompt_str, system_str, messages_str, provider_options_str;
 
     if (opts_obj.Has("prompt") && !opts_obj.Get("prompt").IsUndefined()) {
         prompt_str = opts_obj.Get("prompt").As<Napi::String>().Utf8Value();
@@ -547,6 +547,13 @@ Napi::Value GenerateText(const Napi::CallbackInfo& info) {
     if (opts_obj.Has("messagesJson") && !opts_obj.Get("messagesJson").IsUndefined()) {
         messages_str = opts_obj.Get("messagesJson").As<Napi::String>().Utf8Value();
         opts.messages_json = messages_str.c_str();
+    }
+    if (opts_obj.Has("providerOptions") && !opts_obj.Get("providerOptions").IsUndefined()) {
+        auto json = env.Global().Get("JSON").As<Napi::Object>();
+        auto stringify = json.Get("stringify").As<Napi::Function>();
+        provider_options_str = stringify.Call(json, {opts_obj.Get("providerOptions")})
+            .As<Napi::String>().Utf8Value();
+        opts.provider_options_json = provider_options_str.c_str();
     }
     if (opts_obj.Has("maxSteps") && !opts_obj.Get("maxSteps").IsUndefined()) {
         opts.max_steps = opts_obj.Get("maxSteps").As<Napi::Number>().Int32Value();
@@ -600,7 +607,7 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
     // Option strings are captured by value — they must outlive this call since
     // the stream runs on a worker thread after we return.
     auto model = model_wrap->handle();
-    std::string prompt_str, system_str, messages_str;
+    std::string prompt_str, system_str, messages_str, provider_options_str;
     int max_output_tokens = 0, max_steps = 0;
     double temperature = -1;
     ai_tool_set_t tools = nullptr;
@@ -613,6 +620,12 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
     }
     if (opts_obj.Has("messagesJson") && !opts_obj.Get("messagesJson").IsUndefined()) {
         messages_str = opts_obj.Get("messagesJson").As<Napi::String>().Utf8Value();
+    }
+    if (opts_obj.Has("providerOptions") && !opts_obj.Get("providerOptions").IsUndefined()) {
+        auto json = env.Global().Get("JSON").As<Napi::Object>();
+        auto stringify = json.Get("stringify").As<Napi::Function>();
+        provider_options_str = stringify.Call(json, {opts_obj.Get("providerOptions")})
+            .As<Napi::String>().Utf8Value();
     }
     if (opts_obj.Has("maxSteps") && !opts_obj.Get("maxSteps").IsUndefined()) {
         max_steps = opts_obj.Get("maxSteps").As<Napi::Number>().Int32Value();
@@ -630,7 +643,8 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
     }
 
     RunStreamAsync(env, callback,
-        [model, prompt_str, system_str, messages_str, max_output_tokens, max_steps, temperature, tools]
+        [model, prompt_str, system_str, messages_str, provider_options_str,
+         max_output_tokens, max_steps, temperature, tools]
         (StreamSession* s, ai_stream_callback_fn cb) {
             ai_generate_options_t opts = {};
             opts.model = model;
@@ -641,6 +655,7 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
             opts.prompt = prompt_str.empty() ? nullptr : prompt_str.c_str();
             opts.system = system_str.empty() ? nullptr : system_str.c_str();
             opts.messages_json = messages_str.empty() ? nullptr : messages_str.c_str();
+            opts.provider_options_json = provider_options_str.empty() ? nullptr : provider_options_str.c_str();
             ai_stream_text(opts, cb, s);
         });
 

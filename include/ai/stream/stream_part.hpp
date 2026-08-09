@@ -37,10 +37,12 @@ struct Usage {
     std::optional<boost::json::object> raw;
 
     Usage& operator+=(const Usage& other) {
-        if (other.input_tokens.total)
+        if (other.input_tokens.total) {
             input_tokens.total = input_tokens.total.value_or(0) + *other.input_tokens.total;
-        if (other.output_tokens.total)
+        }
+        if (other.output_tokens.total) {
             output_tokens.total = output_tokens.total.value_or(0) + *other.output_tokens.total;
+        }
         return *this;
     }
 };

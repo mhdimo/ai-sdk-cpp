@@ -4,6 +4,7 @@
 #include <ai/util/json.hpp>
 #include <ai/util/base64.hpp>
 #include <ai/error/api_call_error.hpp>
+#include <cctype>
 
 namespace ai::providers::google {
 
@@ -162,6 +163,35 @@ boost::json::value GoogleLanguageModel::build_request_body(const CallOptions& op
             stops.push_back(boost::json::value(s));
         }
         gen_config["stopSequences"] = std::move(stops);
+    }
+
+    std::string effort;
+    if (auto po = options.provider_options.find("google");
+        po != options.provider_options.end() && po->value().is_object()) {
+        auto& google_opts = po->value().as_object();
+        for (const auto* key : {"reasoningEffort", "reasoning_effort"}) {
+            if (auto it = google_opts.find(key);
+                it != google_opts.end() && it->value().is_string()) {
+                effort = std::string(it->value().as_string());
+                break;
+            }
+        }
+    }
+    if (effort.empty() && options.reasoning) effort = *options.reasoning;
+    if (!effort.empty() && effort != "none") {
+        if (model_id_.find("gemini-3") != std::string::npos) {
+            std::string level = effort;
+            for (auto& c : level) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            gen_config["thinkingConfig"] = boost::json::object{{"thinkingLevel", level}};
+        } else {
+            int budget = 0;
+            if (effort == "minimal" || effort == "low") budget = 1024;
+            else if (effort == "medium") budget = 8192;
+            else if (effort == "high" || effort == "xhigh" || effort == "max") budget = 24576;
+            if (budget > 0) {
+                gen_config["thinkingConfig"] = boost::json::object{{"thinkingBudget", budget}};
+            }
+        }
     }
 
     // Response format / structured output

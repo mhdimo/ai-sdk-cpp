@@ -32,6 +32,8 @@ struct AnthropicOptions {
     // Optional injected client (used by tests to avoid real network). When null,
     // the provider constructs its own HttpClient bound to io_context.
     std::shared_ptr<http::IHttpClient> http_client;
+    // Namespace used to look up provider-scoped options for delegated providers.
+    std::string provider_options_namespace = "anthropic";
 };
 
 class AnthropicProvider : public Provider, public std::enable_shared_from_this<AnthropicProvider> {

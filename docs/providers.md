@@ -96,7 +96,20 @@ Cross-provider controls are conveyed through `ai::CallOptions` (`include/ai/mode
   - **OpenAI** → `reasoning_effort`.
   - **Anthropic** → extended-thinking `budget_tokens`.
   - **DeepSeek** → `thinking` toggle + `reasoning_effort`.
-- **`provider_options.openai`** — object with keys `{reasoning_effort, thinking, structured_output, json_schema_strict}` (see the OpenAI request builder in `providers/openai/src/openai_model.cpp`).
+- **Provider-scoped `reasoningEffort`** — set the option under the provider namespace when the model has provider-specific effort values:
+
+  ```cpp
+  ai::GenerateTextOptions options{
+      .model = model,
+      .prompt = "Solve this carefully",
+      .provider_options = {
+          {"moonshotai", boost::json::object{{"reasoningEffort", "max"}}}
+      },
+  };
+  ```
+
+  The provider adapter translates the value into its native request format. OpenAI-compatible providers emit `reasoning_effort`; Anthropic uses adaptive thinking or a model-appropriate thinking budget; Gemini uses `thinkingConfig`; Bedrock Claude models use Converse `additionalModelRequestFields`.
+- **`provider_options.openai`** — object with keys `{reasoningEffort, reasoning_effort, thinking, structured_output, json_schema_strict}` (see the OpenAI request builder in `providers/openai/src/openai_model.cpp`). Both `reasoningEffort` and the legacy snake_case spelling are accepted.
 - **Extended-thinking signature round-trip (Anthropic):** Anthropic `thinking` blocks carry a `signature`. The SDK captures this signature and re-emits it in assistant turns, enabling correct multi-turn tool use with extended thinking.
 
 For the full list of per-provider options and CMake toggles (`AI_SDK_PROVIDER_<NAME>`), see the root [README](../README.md).

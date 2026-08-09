@@ -68,21 +68,44 @@ boost::json::value AnthropicLanguageModel::build_request_body(
         body["stop_sequences"] = std::move(stops);
     }
 
-    // Thinking/Reasoning controls. A raw provider_options.anthropic.thinking
+    // Thinking/Reasoning controls. A raw provider_options.<provider>.thinking
     // object wins (lets callers drive adaptive thinking on Opus 4.6+/Sonnet
     // 4.6: {type:adaptive, effort:...} or {type:enabled, budget_tokens, display}).
     // Otherwise map the abstract reasoning level to enabled + budget_tokens.
     bool has_thinking_override = false;
-    if (auto po = options.provider_options.find("anthropic");
-        po != options.provider_options.end() && po->value().is_object()) {
+    auto options_namespace = provider_->options().provider_options_namespace;
+    auto po = options.provider_options.find(options_namespace);
+    if (po == options.provider_options.end() && options_namespace != "anthropic") {
+        po = options.provider_options.find("anthropic");
+    }
+    if (po != options.provider_options.end() && po->value().is_object()) {
         auto& ao = po->value().as_object();
         if (auto th = ao.find("thinking"); th != ao.end()) {
             body["thinking"] = th->value();
             has_thinking_override = true;
         }
     }
-    if (!has_thinking_override && options.reasoning && *options.reasoning != "none") {
-        int budget = reasoning_to_budget(*options.reasoning);
+    std::string effort;
+    if (po != options.provider_options.end() && po->value().is_object()) {
+        auto& ao = po->value().as_object();
+        for (const auto* key : {"reasoningEffort", "reasoning_effort"}) {
+            if (auto it = ao.find(key); it != ao.end() && it->value().is_string()) {
+                effort = std::string(it->value().as_string());
+                break;
+            }
+        }
+    }
+    if (effort.empty() && options.reasoning) effort = *options.reasoning;
+    if (!has_thinking_override && !effort.empty() && effort != "none") {
+        bool adaptive = model_id_.find("4-6") != std::string::npos ||
+                        model_id_.find("4.6") != std::string::npos;
+        if (adaptive) {
+            body["thinking"] = boost::json::object{
+                {"type", "adaptive"},
+                {"effort", effort}
+            };
+        } else {
+            int budget = reasoning_to_budget(effort);
         if (budget > 0) {
             // budget_tokens must be < max_tokens (else 400) and >= 1024.
             int max_tok = options.max_output_tokens.value_or(default_max_tokens());
@@ -92,6 +115,7 @@ boost::json::value AnthropicLanguageModel::build_request_body(
                 {"type", "enabled"},
                 {"budget_tokens", budget}
             };
+        }
         }
     }
 

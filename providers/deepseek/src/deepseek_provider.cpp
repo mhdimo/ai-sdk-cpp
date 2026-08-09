@@ -24,6 +24,7 @@ LanguageModelPtr DeepSeekProvider::language_model(std::string_view model_id) {
         .api_key = resolve_api_key(options_.api_key),
         .base_url = options_.base_url,
         .io_context = options_.io_context,
+        .provider_options_namespace = "deepseek",
     };
     auto openai_provider = openai::create_openai(std::move(openai_opts));
     return openai_provider->language_model(model_id);
@@ -38,6 +39,7 @@ ProviderPtr create_deepseek_anthropic(DeepSeekAnthropicOptions options) {
         .api_key = resolve_api_key(options.api_key),
         .base_url = options.base_url,
         .io_context = options.io_context,
+        .provider_options_namespace = "deepseek",
     };
     return anthropic::create_anthropic(std::move(ao));
 }

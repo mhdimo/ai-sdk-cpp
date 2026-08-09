@@ -129,6 +129,26 @@ TEST_CASE("OpenAI emits reasoning_effort + thinking on explicit opt-in", "[provi
     }
 }
 
+TEST_CASE("OpenAI-compatible delegation uses its provider namespace", "[provider][reasoning]") {
+    boost::asio::io_context ioc;
+    auto fake = std::make_shared<ai::test::FakeHttpClient>(ioc);
+    fake->json_body = R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
+    auto provider = std::make_shared<ai::providers::openai::OpenAIProvider>(ai::providers::openai::OpenAIOptions{
+        .api_key = std::string("test-key"),
+        .base_url = "https://api.moonshot.ai/v1",
+        .io_context = ioc,
+        .http_client = fake,
+        .provider_options_namespace = "moonshotai",
+    });
+    auto options = simple_prompt("hi");
+    options.provider_options["moonshotai"] = boost::json::object{{"reasoningEffort", "max"}};
+
+    auto result = run(provider->language_model("kimi-k3")->do_generate(std::move(options)), ioc);
+
+    REQUIRE(result.text() == "ok");
+    REQUIRE(fake->last_request_body.as_object().at("reasoning_effort").as_string() == "max");
+}
+
 // DeepSeek streams reasoning_content deltas before the answer content.
 TEST_CASE("OpenAI streams reasoning_content before content", "[provider][reasoning]") {
     boost::asio::io_context ioc;

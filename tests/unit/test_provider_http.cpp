@@ -85,3 +85,44 @@ TEST_CASE("Google do_generate parses a generateContent response", "[provider]") 
     REQUIRE(result.usage.input_tokens.total.value_or(0) == 4);
     REQUIRE(result.usage.output_tokens.total.value_or(0) == 3);
 }
+
+TEST_CASE("OpenAI accepts provider-scoped reasoningEffort", "[provider][reasoning]") {
+    boost::asio::io_context ioc;
+    auto fake = std::make_shared<ai::test::FakeHttpClient>(ioc);
+    fake->json_body = R"({"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]})";
+
+    auto provider = std::make_shared<ai::providers::openai::OpenAIProvider>(
+        ai::providers::openai::OpenAIOptions{
+            .api_key = std::string("test-key"),
+            .base_url = "https://example.test",
+            .io_context = ioc,
+            .http_client = fake,
+        });
+    auto options = simple_prompt("hi");
+    options.provider_options["openai"] = boost::json::object{{"reasoningEffort", "high"}};
+
+    run(provider->language_model("o3")->do_generate(std::move(options)), ioc);
+
+    REQUIRE(fake->last_request_body.as_object().at("reasoning_effort").as_string() == "high");
+}
+
+TEST_CASE("Google accepts provider-scoped reasoningEffort", "[provider][reasoning]") {
+    boost::asio::io_context ioc;
+    auto fake = std::make_shared<ai::test::FakeHttpClient>(ioc);
+    fake->json_body = R"({"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]})";
+
+    auto provider = std::make_shared<ai::providers::google::GoogleProvider>(
+        ai::providers::google::GoogleOptions{
+            .api_key = std::string("test-key"),
+            .base_url = "https://example.test",
+            .io_context = ioc,
+            .http_client = fake,
+        });
+    auto options = simple_prompt("hi");
+    options.provider_options["google"] = boost::json::object{{"reasoningEffort", "high"}};
+
+    run(provider->language_model("gemini-3-pro")->do_generate(std::move(options)), ioc);
+
+    auto& config = fake->last_request_body.as_object().at("generationConfig").as_object();
+    REQUIRE(config.at("thinkingConfig").as_object().at("thinkingLevel").as_string() == "HIGH");
+}

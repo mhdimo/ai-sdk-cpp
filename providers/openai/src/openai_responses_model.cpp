@@ -49,6 +49,29 @@ json::object OpenAIResponsesModel::build_request_body(const CallOptions& options
     if (options.temperature) body["temperature"] = *options.temperature;
     if (options.top_p) body["top_p"] = *options.top_p;
 
+    const json::object* provider_options = nullptr;
+    if (auto po = options.provider_options.find(provider_.options().provider_options_namespace);
+        po != options.provider_options.end() && po->value().is_object()) {
+        provider_options = &po->value().as_object();
+    }
+    if (!provider_options && provider_.options().provider_options_namespace != "openai") {
+        if (auto po = options.provider_options.find("openai");
+            po != options.provider_options.end() && po->value().is_object()) {
+            provider_options = &po->value().as_object();
+        }
+    }
+    if (provider_options) {
+        for (const auto* key : {"reasoningEffort", "reasoning_effort"}) {
+            if (auto it = provider_options->find(key);
+                it != provider_options->end() && it->value().is_string()) {
+                body["reasoning"] = json::object{{"effort", it->value()}};
+                break;
+            }
+        }
+    } else if (options.reasoning) {
+        body["reasoning"] = json::object{{"effort", *options.reasoning}};
+    }
+
     // Tools
     if (!options.tools.empty()) {
         json::array tools;

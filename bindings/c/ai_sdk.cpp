@@ -384,6 +384,14 @@ ai_status_t ai_generate_text(ai_generate_options_t opts, ai_generate_result_t* r
         if (opts.max_output_tokens > 0) gen_opts.max_output_tokens = opts.max_output_tokens;
         if (opts.temperature >= 0) gen_opts.temperature = opts.temperature;
         if (opts.tools) gen_opts.tools = opts.tools->tools;
+        if (opts.provider_options_json) {
+            auto provider_options = json::parse(opts.provider_options_json);
+            if (!provider_options.is_object()) {
+                ctx->last_error = "provider_options_json must be a JSON object";
+                return AI_ERROR_INVALID_ARGUMENT;
+            }
+            gen_opts.provider_options = provider_options.as_object();
+        }
 
         auto task = ai::generate_text(std::move(gen_opts));
         task.start();
@@ -442,6 +450,14 @@ ai_status_t ai_stream_text(ai_generate_options_t opts, ai_stream_callback_fn cal
         call_opts.prompt = std::move(prompt);
         if (opts.max_output_tokens > 0) call_opts.max_output_tokens = opts.max_output_tokens;
         if (opts.temperature >= 0) call_opts.temperature = opts.temperature;
+        if (opts.provider_options_json) {
+            auto provider_options = json::parse(opts.provider_options_json);
+            if (!provider_options.is_object()) {
+                ctx->last_error = "provider_options_json must be a JSON object";
+                return AI_ERROR_INVALID_ARGUMENT;
+            }
+            call_opts.provider_options = provider_options.as_object();
+        }
 
         auto task = opts.model->ptr->do_stream(std::move(call_opts));
         task.start();

@@ -98,6 +98,7 @@ typedef struct {
     const char* prompt;            /* simple string prompt */
     const char* system;            /* system message, NULL for none */
     const char* messages_json;     /* full messages array as JSON, NULL to use prompt */
+    const char* provider_options_json; /* provider options object as JSON */
     ai_tool_set_t tools;           /* NULL for no tools */
     int max_steps;                 /* 0 = default (1) */
     int max_output_tokens;         /* 0 = model default */

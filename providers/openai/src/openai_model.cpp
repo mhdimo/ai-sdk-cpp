@@ -19,7 +19,7 @@ OpenAIProvider::OpenAIProvider(OpenAIOptions options)
         resolved_api_key_ = *options_.api_key;
     } else {
         const char* env_key = std::getenv("OPENAI_API_KEY");
-        if (env_key) {
+        if (env_key != nullptr) {
             resolved_api_key_ = env_key;
         }
     }
@@ -121,8 +121,8 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
 
     if (reasoning_model) {
         if (options.max_output_tokens) {
-            body["max_completion_tokens"] = *options.max_output_tokens;
-        }
+            body[reasoning_model ? "max_completion_tokens" : "max_tokens"] = *options.max_output_tokens;
+    }
     } else {
         if (options.max_output_tokens) body["max_tokens"] = *options.max_output_tokens;
         if (options.temperature) body["temperature"] = *options.temperature;
@@ -131,11 +131,19 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
         if (options.frequency_penalty) body["frequency_penalty"] = *options.frequency_penalty;
     }
 
-    // Provider-specific overrides live under provider_options["openai"].
-    const boost::json::object* openai_po = nullptr;
-    if (auto po = options.provider_options.find("openai");
+    // Provider-specific overrides live under the originating provider's
+    // namespace. Delegated providers (Moonshot, DeepSeek, z.ai, and generic
+    // OpenAI-compatible providers) set that namespace on OpenAIOptions.
+    const boost::json::object* provider_po = nullptr;
+    if (auto po = options.provider_options.find(provider_->options().provider_options_namespace);
         po != options.provider_options.end() && po->value().is_object()) {
-        openai_po = &po->value().as_object();
+        provider_po = &po->value().as_object();
+    }
+    if (!provider_po && provider_->options().provider_options_namespace != "openai") {
+        if (auto po = options.provider_options.find("openai");
+            po != options.provider_options.end() && po->value().is_object()) {
+            provider_po = &po->value().as_object();
+        }
     }
 
     // Reasoning effort: emitted on explicit opt-in (options.reasoning != "none"),
@@ -145,20 +153,34 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
     // accepts the same strings (normalizing low/medium->high, xhigh->max), so a
     // single mapping serves both. A raw provider_options.openai.reasoning_effort
     // string overrides it (e.g. DeepSeek "max").
-    if (options.reasoning) {
-        const auto& level = *options.reasoning;
+    if (options.reasoning || provider_po) {
+        std::string configured_level = options.reasoning.value_or("");
         std::string effort;
-        if (level == "none") effort = "none";
-        else if (level == "minimal") effort = "minimal";
-        else if (level == "low") effort = "low";
-        else if (level == "medium") effort = "medium";
-        else if (level == "high") effort = "high";
-        else if (level == "xhigh" || level == "max") effort = "xhigh";
+        static const std::unordered_map<std::string_view, std::string_view> mapping{
+            {"none", "none"},
+            {"minimal", "minimal"},
+            {"low", "low"},
+            {"medium", "medium"},
+            {"high", "high"},
+            {"xhigh", "xhigh"},
+            {"max", "max"},
+        };
+
+        if (auto it = mapping.find(configured_level); it != mapping.end()) {
+            effort = std::string(it->second);
+        }
         bool forced = false;
-        if (openai_po) {
-            if (auto re = openai_po->find("reasoning_effort");
-                re != openai_po->end() && re->value().is_string()) {
-                effort = std::string(re->value().as_string());
+        if (provider_po != nullptr) {
+            const boost::json::value* raw_effort = nullptr;
+            for (const auto* key : {"reasoningEffort", "reasoning_effort"}) {
+                if (auto re = provider_po->find(key);
+                    re != provider_po->end() && re->value().is_string()) {
+                    raw_effort = &re->value();
+                    break;
+                }
+            }
+            if (raw_effort) {
+                effort = std::string(raw_effort->as_string());
                 forced = true;
             }
         }
@@ -169,7 +191,7 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
         if (!effort.empty()) {
             const bool real_openai = is_openai_host(provider_->options().base_url);
             if (reasoning_model || !real_openai || forced) {
-                body["reasoning_effort"] = std::move(effort);
+                body["reasoning_effort"] = effort;
             }
         }
     }
@@ -177,26 +199,28 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
     // DeepSeek-style thinking toggle: opt-in only via
     // provider_options.openai.thinking = "enabled"|"disabled". Never sent by
     // default — OpenAI's Chat Completions endpoint would reject it.
-    if (openai_po) {
-        if (auto th = openai_po->find("thinking");
-            th != openai_po->end() && th->value().is_string()) {
+    if (provider_po != nullptr) {
+        if (const auto *th = provider_po->find("thinking");
+            th != provider_po->end() && th->value().is_string()) {
             body["thinking"] = boost::json::object{
                 {"type", std::string(th->value().as_string())}
             };
         }
     }
 
-    if (options.seed) body["seed"] = *options.seed;
+    if (options.seed) { body["seed"] = *options.seed;
+}
 
     if (options.stop_sequences && !options.stop_sequences->empty()) {
         boost::json::array stops;
-        for (auto& s : *options.stop_sequences) stops.push_back(boost::json::value(s));
+        for (const auto& s : *options.stop_sequences) { stops.push_back(boost::json::value(s));
+}
         body["stop"] = std::move(stops);
     }
 
     // Messages
     boost::json::array messages;
-    for (auto& msg : options.prompt) {
+    for (const auto& msg : options.prompt) {
         std::visit([&](auto&& m) {
             using T = std::decay_t<decltype(m)>;
             if constexpr (std::is_same_v<T, SystemMessage>) {
@@ -206,55 +230,73 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
                     {"role", role}, {"content", m.content}
                 });
             } else if constexpr (std::is_same_v<T, UserMessage>) {
-                boost::json::array content;
+                bool has_file_parts = false;
                 for (auto& part : m.content) {
-                    std::visit([&](auto&& p) {
-                        using P = std::decay_t<decltype(p)>;
-                        if constexpr (std::is_same_v<P, TextPart>) {
-                            content.push_back(boost::json::object{
-                                {"type", "text"}, {"text", p.text}
-                            });
-                        } else if constexpr (std::is_same_v<P, FilePart>) {
-                            // Serialize FilePart as image_url for OpenAI
-                            std::visit([&](auto&& file_data) {
-                                using FD = std::decay_t<decltype(file_data)>;
-                                if constexpr (std::is_same_v<FD, DataFileData>) {
-                                    std::string b64 = ai::util::base64_encode(file_data.data);
-                                    std::string data_url = "data:" + p.media_type + ";base64," + b64;
-                                    content.push_back(boost::json::object{
-                                        {"type", "image_url"},
-                                        {"image_url", boost::json::object{
-                                            {"url", std::move(data_url)}
-                                        }}
-                                    });
-                                } else if constexpr (std::is_same_v<FD, UrlFileData>) {
-                                    content.push_back(boost::json::object{
-                                        {"type", "image_url"},
-                                        {"image_url", boost::json::object{
-                                            {"url", file_data.url}
-                                        }}
-                                    });
-                                }
-                            }, p.data);
-                        }
-                    }, part);
+                    if (std::holds_alternative<FilePart>(part)) {
+                        has_file_parts = true;
+                        break;
+                    }
                 }
-                messages.push_back(boost::json::object{
-                    {"role", "user"}, {"content", std::move(content)}
-                });
+
+                if (has_file_parts) {
+                    boost::json::array content;
+                    for (auto& part : m.content) {
+                        std::visit([&](auto&& p) {
+                            using P = std::decay_t<decltype(p)>;
+                            if constexpr (std::is_same_v<P, TextPart>) {
+                                content.push_back(boost::json::object{
+                                    {"type", "text"}, {"text", p.text}
+                                });
+                            } else if constexpr (std::is_same_v<P, FilePart>) {
+                                // Serialize FilePart as image_url for OpenAI
+                                std::visit([&](auto&& file_data) {
+                                    using FD = std::decay_t<decltype(file_data)>;
+                                    if constexpr (std::is_same_v<FD, DataFileData>) {
+                                        std::string b64 = ai::util::base64_encode(file_data.data);
+                                        std::string data_url = "data:" + p.media_type + ";base64," + b64;
+                                        content.push_back(boost::json::object{
+                                            {"type", "image_url"},
+                                            {"image_url", boost::json::object{
+                                                {"url", std::move(data_url)}
+                                            }}
+                                        });
+                                    } else if constexpr (std::is_same_v<FD, UrlFileData>) {
+                                        content.push_back(boost::json::object{
+                                            {"type", "image_url"},
+                                            {"image_url", boost::json::object{
+                                                {"url", file_data.url}
+                                            }}
+                                        });
+                                    }
+                                }, p.data);
+                            }
+                        }, part);
+                    }
+                    messages.push_back(boost::json::object{
+                        {"role", "user"}, {"content", std::move(content)}
+                    });
+                } else {
+                    std::string text_content;
+                    for (auto& part : m.content) {
+                        if (auto* p = std::get_if<TextPart>(&part)) {
+                            text_content += p->text;
+                        }
+                    }
+                    messages.push_back(boost::json::object{
+                        {"role", "user"}, {"content", std::move(text_content)}
+                    });
+                }
             } else if constexpr (std::is_same_v<T, AssistantMessage>) {
                 boost::json::object msg_obj;
                 msg_obj["role"] = "assistant";
-                boost::json::array content;
+                std::string text_content;
                 boost::json::array tool_calls_arr;
 
                 for (auto& part : m.content) {
                     std::visit([&](auto&& p) {
                         using P = std::decay_t<decltype(p)>;
                         if constexpr (std::is_same_v<P, TextPart>) {
-                            content.push_back(boost::json::object{
-                                {"type", "text"}, {"text", p.text}
-                            });
+                            text_content += p.text;
                         } else if constexpr (std::is_same_v<P, ToolCallPart>) {
                             tool_calls_arr.push_back(boost::json::object{
                                 {"id", p.tool_call_id},
@@ -264,11 +306,13 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
                                     {"arguments", boost::json::serialize(p.input)},
                                 }},
                             });
+                        } else if constexpr (std::is_same_v<P, ReasoningPart>) {
+                            msg_obj["reasoning_content"] = p.text;
                         }
                     }, part);
                 }
 
-                if (!content.empty()) msg_obj["content"] = std::move(content);
+                if (!text_content.empty()) msg_obj["content"] = std::move(text_content);
                 if (!tool_calls_arr.empty()) msg_obj["tool_calls"] = std::move(tool_calls_arr);
                 messages.push_back(std::move(msg_obj));
             } else if constexpr (std::is_same_v<T, ToolMessage>) {
@@ -341,17 +385,17 @@ boost::json::value OpenAIChatLanguageModel::build_request_body(
     if (options.response_format && options.response_format->type == "json") {
         const bool real_openai = is_openai_host(provider_->options().base_url);
         std::string mode = real_openai ? "json_schema" : "json_object";
-        if (openai_po) {
-            if (auto so = openai_po->find("structured_output");
-                so != openai_po->end() && so->value().is_string()) {
+        if (provider_po) {
+            if (auto so = provider_po->find("structured_output");
+                so != provider_po->end() && so->value().is_string()) {
                 mode = std::string(so->value().as_string());
             }
         }
         if (options.response_format->schema && mode == "json_schema") {
             bool strict = true;
-            if (openai_po) {
-                if (auto st = openai_po->find("json_schema_strict");
-                    st != openai_po->end() && st->value().is_bool()) {
+            if (provider_po) {
+                if (auto st = provider_po->find("json_schema_strict");
+                    st != provider_po->end() && st->value().is_bool()) {
                     strict = st->value().as_bool();
                 }
             }

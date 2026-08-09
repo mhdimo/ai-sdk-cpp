@@ -36,6 +36,7 @@ ZaiProvider::ZaiProvider(ZaiOptions options)
         .auth_token = resolve_api_key(options_.api_key),
         .base_url = options_.base_url,
         .io_context = options_.io_context,
+        .provider_options_namespace = "zai",
     };
     anthropic_ = std::static_pointer_cast<anthropic::AnthropicProvider>(
         anthropic::create_anthropic(std::move(ao)));
@@ -59,6 +60,7 @@ ProviderPtr create_zai_openai(ZaiOpenAiOptions options) {
         .api_key = resolve_api_key(options.api_key),
         .base_url = options.base_url,
         .io_context = options.io_context,
+        .provider_options_namespace = "zai",
     };
     return openai::create_openai(std::move(o));
 }

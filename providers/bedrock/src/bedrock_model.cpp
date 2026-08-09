@@ -109,7 +109,7 @@ json::array convert_tool_results(const std::vector<ToolResultPart>& results) {
     return parts;
 }
 
-json::object build_request_body(const CallOptions& options) {
+json::object build_request_body(const CallOptions& options, std::string_view model_id) {
     json::object body;
 
     // System messages
@@ -163,6 +163,31 @@ json::object build_request_body(const CallOptions& options) {
         inference_config["stopSequences"] = std::move(stops);
     }
     if (!inference_config.empty()) body["inferenceConfig"] = std::move(inference_config);
+
+    std::string effort;
+    if (auto po = options.provider_options.find("amazon-bedrock");
+        po != options.provider_options.end() && po->value().is_object()) {
+        auto& bedrock_opts = po->value().as_object();
+        for (const auto* key : {"reasoningEffort", "reasoning_effort"}) {
+            if (auto it = bedrock_opts.find(key);
+                it != bedrock_opts.end() && it->value().is_string()) {
+                effort = std::string(it->value().as_string());
+                break;
+            }
+        }
+    }
+    if (effort.empty() && options.reasoning) effort = *options.reasoning;
+    if (!effort.empty() && effort != "none" && model_id.find("claude") != std::string_view::npos) {
+        int budget = 0;
+        if (effort == "minimal" || effort == "low") budget = 1024;
+        else if (effort == "medium") budget = 10000;
+        else if (effort == "high" || effort == "xhigh" || effort == "max") budget = 50000;
+        if (budget > 0) {
+            body["additionalModelRequestFields"] = json::object{
+                {"thinking", json::object{{"type", "enabled"}, {"budget_tokens", budget}}}
+            };
+        }
+    }
 
     // Tools
     if (!options.tools.empty()) {
@@ -444,7 +469,7 @@ public:
     std::string_view model_id() const override { return model_id_; }
 
     Task<GenerateResult> do_generate(CallOptions options) override {
-        json::object body = build_request_body(options);
+        json::object body = build_request_body(options, model_id_);
         auto body_str = json::serialize(body);
 
         auto url = provider_.runtime_base_url() + "/model/" + model_id_ + "/converse";
@@ -456,7 +481,7 @@ public:
     }
 
     Task<StreamResult> do_stream(CallOptions options) override {
-        json::object body = build_request_body(options);
+        json::object body = build_request_body(options, model_id_);
         auto body_str = json::serialize(body);
 
         auto url = provider_.runtime_base_url() + "/model/" + model_id_ + "/converse-stream";

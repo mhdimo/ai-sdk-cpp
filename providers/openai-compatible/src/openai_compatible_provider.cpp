@@ -24,6 +24,7 @@ LanguageModelPtr OpenAICompatibleProvider::language_model(std::string_view model
         .api_key = resolve_api_key(options_.api_key, options_.api_key_env_var),
         .base_url = options_.base_url,
         .io_context = options_.io_context,
+        .provider_options_namespace = options_.name,
     };
     auto openai_provider = openai::create_openai(std::move(openai_opts));
     return openai_provider->language_model(model_id);

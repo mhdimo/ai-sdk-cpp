@@ -19,6 +19,9 @@ struct OpenAIOptions {
     boost::asio::io_context& io_context;
     // Optional injected client (tests); null = construct a real HttpClient.
     std::shared_ptr<http::IHttpClient> http_client;
+    // Namespace used to look up provider-scoped options when this model is
+    // delegated by an OpenAI-compatible provider.
+    std::string provider_options_namespace = "openai";
 };
 
 class OpenAIProvider : public Provider, public std::enable_shared_from_this<OpenAIProvider> {
