@@ -159,6 +159,7 @@ typedef struct {
     int max_steps;
     ai_stream_callback_fn on_event;  /* NULL for no streaming */
     void* user_data;
+    const char* provider_options_json; /* provider options object as JSON, NULL for none */
 } ai_agent_options_t;
 
 ai_agent_t ai_agent_create(ai_agent_options_t opts);

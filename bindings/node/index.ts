@@ -22,7 +22,7 @@ interface NativeBinding {
   Provider: new (ctx: NativeContext, name: string, apiKey: string | null, baseUrl: string | null) => NativeProvider;
   Model: new (provider: NativeProvider, modelId: string) => NativeModel;
   ToolSet: new () => NativeToolSet;
-  Agent: new (model: NativeModel, tools: NativeToolSet, instructions: string, maxSteps: number) => NativeAgent;
+  Agent: new (model: NativeModel, tools: NativeToolSet, instructions: string, maxSteps: number, opts?: NativeAgentOptions) => NativeAgent;
   generateText(model: NativeModel, opts: NativeGenerateOpts): NativeResult;
   streamText(model: NativeModel, opts: NativeGenerateOpts, callback: StreamCallback): void;
   Session: new (agent: NativeAgent, opts?: NativeSessionOptions) => NativeSession;
@@ -39,6 +39,10 @@ interface NativeSessionOptions {
   memoryDir?: string;
   maxContextTokens?: number;
   enableCheckpoint?: boolean;
+}
+
+interface NativeAgentOptions {
+  providerOptions?: Record<string, Record<string, unknown>>;
 }
 
 interface NativeSession {
@@ -297,6 +301,7 @@ export class Agent {
     instructions?: string;
     maxSteps?: number;
     extraToolSets?: StandardToolSet[];
+    providerOptions?: Record<string, Record<string, unknown>>;
   }) {
     const toolSet = new native.ToolSet();
     for (const t of opts.tools) {
@@ -324,6 +329,7 @@ export class Agent {
       toolSet,
       opts.instructions ?? '',
       opts.maxSteps ?? 50,
+      opts.providerOptions ? { providerOptions: opts.providerOptions } : undefined,
     );
   }
 

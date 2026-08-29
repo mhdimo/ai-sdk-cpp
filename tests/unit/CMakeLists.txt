@@ -26,6 +26,13 @@ target_link_libraries(ai-sdk-tests PRIVATE
     Catch2::Catch2WithMain
 )
 
+# C binding tests are only compiled when the C shared library is built.
+if(AI_SDK_BUILD_BINDINGS)
+    target_sources(ai-sdk-tests PRIVATE test_c_binding.cpp)
+    target_link_libraries(ai-sdk-tests PRIVATE ai-sdk-c)
+    target_include_directories(ai-sdk-tests PRIVATE ${CMAKE_SOURCE_DIR}/bindings/c)
+endif()
+
 # Provider-specific tests are only compiled when their provider is enabled.
 if(AI_SDK_PROVIDER_ANTHROPIC)
     target_sources(ai-sdk-tests PRIVATE test_anthropic_structured.cpp)

@@ -486,6 +486,17 @@ ai_agent_t ai_agent_create(ai_agent_options_t opts) {
         .max_steps = opts.max_steps > 0 ? opts.max_steps : 50,
     };
 
+    if (opts.provider_options_json) {
+        boost::system::error_code ec;
+        auto provider_options = json::parse(opts.provider_options_json, ec);
+        if (ec || !provider_options.is_object()) {
+            opts.model->ctx->last_error = ec ? ec.message()
+                                             : "provider_options_json must be a JSON object";
+            return nullptr;
+        }
+        agent_opts.provider_options = provider_options.as_object();
+    }
+
     if (opts.on_event) {
         auto cb = opts.on_event;
         auto ud = opts.user_data;

@@ -362,7 +362,7 @@ AgentWrapper::AgentWrapper(const Napi::CallbackInfo& info)
     Napi::Env env = info.Env();
 
     if (info.Length() < 4) {
-        Napi::TypeError::New(env, "Expected (model, toolSet, instructions, maxSteps)").ThrowAsJavaScriptException();
+        Napi::TypeError::New(env, "Expected (model, toolSet, instructions, maxSteps[, opts])").ThrowAsJavaScriptException();
         return;
     }
 
@@ -382,6 +382,19 @@ AgentWrapper::AgentWrapper(const Napi::CallbackInfo& info)
     opts.max_steps = max_steps;
     opts.on_event = nullptr;
     opts.user_data = nullptr;
+    opts.provider_options_json = nullptr;
+
+    std::string provider_options_str;
+    if (info.Length() >= 5 && info[4].IsObject()) {
+        auto opts_obj = info[4].As<Napi::Object>();
+        if (opts_obj.Has("providerOptions") && !opts_obj.Get("providerOptions").IsUndefined()) {
+            auto json = env.Global().Get("JSON").As<Napi::Object>();
+            auto stringify = json.Get("stringify").As<Napi::Function>();
+            provider_options_str = stringify.Call(json, {opts_obj.Get("providerOptions")})
+                .As<Napi::String>().Utf8Value();
+            opts.provider_options_json = provider_options_str.c_str();
+        }
+    }
 
     agent_ = ai_agent_create(opts);
     if (!agent_) {
