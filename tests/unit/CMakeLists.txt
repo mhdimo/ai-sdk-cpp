@@ -9,6 +9,7 @@ add_executable(ai-sdk-tests
     test_session.cpp
     test_permission.cpp
     test_standard_toolkit.cpp
+    test_tool_loop.cpp
     test_session_store.cpp
     test_memory.cpp
     test_coding_agent.cpp

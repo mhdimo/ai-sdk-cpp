@@ -93,6 +93,71 @@ void append_tool_results(Prompt& prompt, const std::vector<ToolCallResult>& resu
     prompt.push_back(ToolMessage{.content = std::move(content)});
 }
 
+Task<ToolCallResult> execute_one_tool(
+    const ToolCallContent& tc,
+    const ToolSet& tools,
+    const Prompt& messages,
+    CancellationToken cancel,
+    const std::optional<std::function<Task<std::string>(std::string, std::string)>>& repair_tool_call
+) {
+    auto* tool_def = tools.find(tc.tool_name);
+    if (!tool_def || !tool_def->execute) {
+        co_return ToolCallResult{
+            .tool_call_id = tc.tool_call_id,
+            .tool_name = tc.tool_name,
+            .input = ai::json::safe_parse(tc.input).value_or(boost::json::value(tc.input)),
+            .output = boost::json::value("Tool not found or not executable: " + tc.tool_name),
+            .is_error = true,
+        };
+    }
+
+    // Attempt to parse tool input JSON, with optional repair
+    auto parsed_input = ai::json::safe_parse(tc.input);
+    if (!parsed_input && repair_tool_call) {
+        // Tool input JSON is invalid; attempt repair
+        try {
+            std::string error_msg = "Invalid JSON in tool call input for tool '" +
+                tc.tool_name + "': failed to parse input";
+            auto repaired = co_await (*repair_tool_call)(tc.input, error_msg);
+            parsed_input = ai::json::safe_parse(repaired);
+            if (!parsed_input) {
+                // Repair returned non-JSON; use the repaired string as-is
+                parsed_input = boost::json::value(repaired);
+            }
+        } catch (const std::exception&) {
+            // Repair failed; fall through with original input as string value
+            parsed_input = boost::json::value(tc.input);
+        }
+    }
+
+    auto input = parsed_input.value_or(boost::json::value(tc.input));
+    ToolExecutionContext ctx{
+        .tool_call_id = tc.tool_call_id,
+        .tool_name = tc.tool_name,
+        .messages = std::vector<Message>(messages.begin(), messages.end()),
+        .cancel = cancel,
+    };
+
+    try {
+        auto output = co_await (*tool_def->execute)(input, std::move(ctx));
+        co_return ToolCallResult{
+            .tool_call_id = tc.tool_call_id,
+            .tool_name = tc.tool_name,
+            .input = input,
+            .output = std::move(output),
+            .is_error = false,
+        };
+    } catch (const std::exception& e) {
+        co_return ToolCallResult{
+            .tool_call_id = tc.tool_call_id,
+            .tool_name = tc.tool_name,
+            .input = input,
+            .output = boost::json::value(std::string("Error: ") + e.what()),
+            .is_error = true,
+        };
+    }
+}
+
 Task<std::vector<ToolCallResult>> execute_tools(
     const std::vector<ToolCallContent>& tool_calls,
     const ToolSet& tools,
@@ -100,69 +165,24 @@ Task<std::vector<ToolCallResult>> execute_tools(
     CancellationToken cancel,
     const std::optional<std::function<Task<std::string>(std::string, std::string)>>& repair_tool_call
 ) {
-    std::vector<ToolCallResult> results;
-    results.reserve(tool_calls.size());
-
+    // Launch every tool call before awaiting any of them. Each Task runs until
+    // its first suspension point, so independent calls interleave on the event
+    // loop instead of serializing behind the slowest tool.
+    std::vector<Task<ToolCallResult>> tasks;
+    tasks.reserve(tool_calls.size());
     for (auto& tc : tool_calls) {
-        auto* tool_def = tools.find(tc.tool_name);
-        if (!tool_def || !tool_def->execute) {
-            results.push_back(ToolCallResult{
-                .tool_call_id = tc.tool_call_id,
-                .tool_name = tc.tool_name,
-                .input = ai::json::safe_parse(tc.input).value_or(boost::json::value(tc.input)),
-                .output = boost::json::value("Tool not found or not executable: " + tc.tool_name),
-                .is_error = true,
-            });
-            continue;
-        }
-
-        // Attempt to parse tool input JSON, with optional repair
-        auto parsed_input = ai::json::safe_parse(tc.input);
-        if (!parsed_input && repair_tool_call) {
-            // Tool input JSON is invalid; attempt repair
-            try {
-                std::string error_msg = "Invalid JSON in tool call input for tool '" +
-                    tc.tool_name + "': failed to parse input";
-                auto repaired = co_await (*repair_tool_call)(tc.input, error_msg);
-                parsed_input = ai::json::safe_parse(repaired);
-                if (!parsed_input) {
-                    // Repair returned non-JSON; use the repaired string as-is
-                    parsed_input = boost::json::value(repaired);
-                }
-            } catch (const std::exception&) {
-                // Repair failed; fall through with original input as string value
-                parsed_input = boost::json::value(tc.input);
-            }
-        }
-
-        auto input = parsed_input.value_or(boost::json::value(tc.input));
-        ToolExecutionContext ctx{
-            .tool_call_id = tc.tool_call_id,
-            .tool_name = tc.tool_name,
-            .messages = std::vector<Message>(messages.begin(), messages.end()),
-            .cancel = cancel,
-        };
-
-        try {
-            auto output = co_await (*tool_def->execute)(input, std::move(ctx));
-            results.push_back(ToolCallResult{
-                .tool_call_id = tc.tool_call_id,
-                .tool_name = tc.tool_name,
-                .input = input,
-                .output = std::move(output),
-                .is_error = false,
-            });
-        } catch (const std::exception& e) {
-            results.push_back(ToolCallResult{
-                .tool_call_id = tc.tool_call_id,
-                .tool_name = tc.tool_name,
-                .input = input,
-                .output = boost::json::value(std::string("Error: ") + e.what()),
-                .is_error = true,
-            });
-        }
+        tasks.push_back(execute_one_tool(tc, tools, messages, cancel, repair_tool_call));
+    }
+    for (auto& task : tasks) {
+        task.start();
     }
 
+    // Await in launch order so results line up with the model's tool_calls.
+    std::vector<ToolCallResult> results;
+    results.reserve(tasks.size());
+    for (auto& task : tasks) {
+        results.push_back(co_await task);
+    }
     co_return results;
 }
 

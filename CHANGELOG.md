@@ -5,7 +5,18 @@ All notable changes to ai-sdk-cpp. Format loosely based on
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- **`Task` start-then-await**: `co_await` on a `Task` that was already
+  `start()`ed re-entered the coroutine mid-await and read an empty result
+  (silent nulls / UB). `await_suspend` now registers the continuation and
+  suspends for in-flight tasks; only fresh tasks are launched. Move
+  construction carries the started flag.
+
+### Changed
+- **Parallel tool execution**: `execute_tools` (generate + stream paths)
+  launches all tool calls in a step before awaiting results, so independent
+  calls interleave on the event loop instead of serializing behind the slowest
+  tool. Results stay in tool-call order; per-call error isolation unchanged.
 
 ## [0.1.0] - 2026-06-22
 

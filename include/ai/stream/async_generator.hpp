@@ -170,15 +170,18 @@ public:
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
 
-    Task(Task&& other) noexcept : handle_(other.handle_) {
+    Task(Task&& other) noexcept : handle_(other.handle_), started_(other.started_) {
         other.handle_ = nullptr;
+        other.started_ = false;
     }
 
     Task& operator=(Task&& other) noexcept {
         if (this != &other) {
             if (handle_) handle_.destroy();
             handle_ = other.handle_;
+            started_ = other.started_;
             other.handle_ = nullptr;
+            other.started_ = false;
         }
         return *this;
     }
@@ -189,6 +192,13 @@ public:
 
     std::coroutine_handle<> await_suspend(std::coroutine_handle<> awaiting) noexcept {
         handle_.promise().continuation = awaiting;
+        if (started_) {
+            // Task is already in flight (start() then co_await); it resumes us
+            // via final_suspend when it completes. Resuming it here would
+            // re-enter the coroutine mid-await before its result exists.
+            return std::noop_coroutine();
+        }
+        started_ = true;
         return handle_;
     }
 
@@ -201,6 +211,7 @@ public:
 
     void start() {
         if (handle_ && !handle_.done()) {
+            started_ = true;
             handle_.resume();
         }
     }
@@ -211,6 +222,7 @@ public:
 
     T get() {
         if (!handle_.done()) {
+            started_ = true;
             handle_.resume();
         }
         if (handle_.promise().exception) {
@@ -221,6 +233,7 @@ public:
 
 private:
     std::coroutine_handle<promise_type> handle_;
+    bool started_ = false;
 };
 
 template <>
@@ -266,15 +279,18 @@ public:
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
 
-    Task(Task&& other) noexcept : handle_(other.handle_) {
+    Task(Task&& other) noexcept : handle_(other.handle_), started_(other.started_) {
         other.handle_ = nullptr;
+        other.started_ = false;
     }
 
     Task& operator=(Task&& other) noexcept {
         if (this != &other) {
             if (handle_) handle_.destroy();
             handle_ = other.handle_;
+            started_ = other.started_;
             other.handle_ = nullptr;
+            other.started_ = false;
         }
         return *this;
     }
@@ -285,6 +301,13 @@ public:
 
     std::coroutine_handle<> await_suspend(std::coroutine_handle<> awaiting) noexcept {
         handle_.promise().continuation = awaiting;
+        if (started_) {
+            // Task is already in flight (start() then co_await); it resumes us
+            // via final_suspend when it completes. Resuming it here would
+            // re-enter the coroutine mid-await before completion.
+            return std::noop_coroutine();
+        }
+        started_ = true;
         return handle_;
     }
 
@@ -296,6 +319,7 @@ public:
 
     void start() {
         if (handle_ && !handle_.done()) {
+            started_ = true;
             handle_.resume();
         }
     }
@@ -306,6 +330,7 @@ public:
 
     void get() {
         if (!handle_.done()) {
+            started_ = true;
             handle_.resume();
         }
         if (handle_.promise().exception) {
@@ -315,6 +340,7 @@ public:
 
 private:
     std::coroutine_handle<promise_type> handle_;
+    bool started_ = false;
 };
 
 } // namespace ai

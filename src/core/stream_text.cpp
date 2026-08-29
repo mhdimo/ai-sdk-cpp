@@ -100,56 +100,75 @@ void append_tool_results(Prompt& prompt, const std::vector<ToolCallResult>& resu
     prompt.push_back(ToolMessage{.content = std::move(content)});
 }
 
+Task<ToolCallResult> execute_one_tool(
+    const ToolCallContent& tc,
+    const ToolSet& tools,
+    const Prompt& messages,
+    CancellationToken cancel
+) {
+    auto* tool_def = tools.find(tc.tool_name);
+    if (!tool_def || !tool_def->execute) {
+        co_return ToolCallResult{
+            .tool_call_id = tc.tool_call_id,
+            .tool_name = tc.tool_name,
+            .input = ai::json::safe_parse(tc.input).value_or(boost::json::value(tc.input)),
+            .output = boost::json::value("Tool not found or not executable: " + tc.tool_name),
+            .is_error = true,
+        };
+    }
+
+    auto input = ai::json::safe_parse(tc.input).value_or(boost::json::value(tc.input));
+    ToolExecutionContext ctx{
+        .tool_call_id = tc.tool_call_id,
+        .tool_name = tc.tool_name,
+        .messages = std::vector<Message>(messages.begin(), messages.end()),
+        .cancel = cancel,
+    };
+
+    try {
+        auto output = co_await (*tool_def->execute)(input, std::move(ctx));
+        co_return ToolCallResult{
+            .tool_call_id = tc.tool_call_id,
+            .tool_name = tc.tool_name,
+            .input = input,
+            .output = std::move(output),
+            .is_error = false,
+        };
+    } catch (const std::exception& e) {
+        co_return ToolCallResult{
+            .tool_call_id = tc.tool_call_id,
+            .tool_name = tc.tool_name,
+            .input = input,
+            .output = boost::json::value(std::string("Error: ") + e.what()),
+            .is_error = true,
+        };
+    }
+}
+
 Task<std::vector<ToolCallResult>> execute_tools(
     const std::vector<ToolCallContent>& tool_calls,
     const ToolSet& tools,
     const Prompt& messages,
     CancellationToken cancel
 ) {
-    std::vector<ToolCallResult> results;
-    results.reserve(tool_calls.size());
-
+    // Launch every tool call before awaiting any of them. Each Task runs until
+    // its first suspension point, so independent calls interleave on the event
+    // loop instead of serializing behind the slowest tool.
+    std::vector<Task<ToolCallResult>> tasks;
+    tasks.reserve(tool_calls.size());
     for (auto& tc : tool_calls) {
-        auto* tool_def = tools.find(tc.tool_name);
-        if (!tool_def || !tool_def->execute) {
-            results.push_back(ToolCallResult{
-                .tool_call_id = tc.tool_call_id,
-                .tool_name = tc.tool_name,
-                .input = ai::json::safe_parse(tc.input).value_or(boost::json::value(tc.input)),
-                .output = boost::json::value("Tool not found or not executable: " + tc.tool_name),
-                .is_error = true,
-            });
-            continue;
-        }
-
-        auto input = ai::json::safe_parse(tc.input).value_or(boost::json::value(tc.input));
-        ToolExecutionContext ctx{
-            .tool_call_id = tc.tool_call_id,
-            .tool_name = tc.tool_name,
-            .messages = std::vector<Message>(messages.begin(), messages.end()),
-            .cancel = cancel,
-        };
-
-        try {
-            auto output = co_await (*tool_def->execute)(input, std::move(ctx));
-            results.push_back(ToolCallResult{
-                .tool_call_id = tc.tool_call_id,
-                .tool_name = tc.tool_name,
-                .input = input,
-                .output = std::move(output),
-                .is_error = false,
-            });
-        } catch (const std::exception& e) {
-            results.push_back(ToolCallResult{
-                .tool_call_id = tc.tool_call_id,
-                .tool_name = tc.tool_name,
-                .input = input,
-                .output = boost::json::value(std::string("Error: ") + e.what()),
-                .is_error = true,
-            });
-        }
+        tasks.push_back(execute_one_tool(tc, tools, messages, cancel));
+    }
+    for (auto& task : tasks) {
+        task.start();
     }
 
+    // Await in launch order so results line up with the model's tool_calls.
+    std::vector<ToolCallResult> results;
+    results.reserve(tasks.size());
+    for (auto& task : tasks) {
+        results.push_back(co_await task);
+    }
     co_return results;
 }
 
