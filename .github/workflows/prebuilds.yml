@@ -1,0 +1,135 @@
+name: Prebuilds
+
+# Builds the native binaries that `npm install ai-sdk-cpp` resolves at runtime.
+#
+# This workflow is the difference between a package that installs and one that
+# does not: the tarball ships prebuilds/, and node-gyp-build picks the one
+# matching the user's platform. With nothing in prebuilds/ every install fails
+# at require() with "No native build was found", on every machine.
+#
+# Runs on a tag so a release is built from the tag itself, and by hand so the
+# matrix can be exercised without cutting one.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  prebuild:
+    name: Prebuild (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The runner image sets how old a system the artifact will run on:
+          # glibc versions its symbols, so one built on a newer distro refuses
+          # to start on an older one. 22.04 puts the floor at glibc 2.35, which
+          # covers Ubuntu 22.04, Debian 12 and anything later. Moving either
+          # Linux job to a newer image silently narrows that -- keep them
+          # matched, or knowingly accept the difference.
+          - runner: ubuntu-22.04
+            target: linux-x64
+          - runner: ubuntu-22.04-arm
+            target: linux-arm64
+          # macos-13 is the last Intel image; 14 and later are Apple Silicon.
+          # Two runners, because one prebuild cannot serve both architectures.
+          - runner: macos-13
+            target: darwin-x64
+          - runner: macos-14
+            target: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libssl-dev cmake ninja-build
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install boost openssl cmake ninja
+          echo "OpenSSL_DIR=$(brew --prefix openssl)/lib/cmake/OpenSSL" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # --ignore-scripts: the install step is for package consumers deciding
+      # whether a prebuild exists, not for a checkout that is about to build
+      # one. Skipping it also keeps this job from needing node-gyp to configure.
+      - name: Install dependencies (Node)
+        working-directory: bindings/node
+        run: npm install --ignore-scripts
+
+      # The script builds the C++ library with a static OpenSSL, links the addon
+      # against it, and refuses to emit anything that depends on a path outside
+      # the package -- which is how a Homebrew OpenSSL nearly shipped.
+      - name: Build the prebuild
+        working-directory: bindings/node
+        run: npm run build:prebuild
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: bindings/node/prebuilds/${{ matrix.target }}
+          if-no-files-found: error
+
+  # Collects every platform into one package. Publishing is deliberately left
+  # to a human: `npm publish` is close to irreversible once someone installs
+  # it, and a tag push should not be able to do that on its own.
+  assemble:
+    name: Assemble the package
+    needs: prebuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Each artifact lands as prebuilds/prebuild-<target>/ because that is the
+      # artifact name. node-gyp-build looks for prebuilds/<platform>-<arch>, so
+      # the prefix has to come off.
+      - uses: actions/download-artifact@v4
+        with:
+          path: bindings/node/prebuilds
+          pattern: prebuild-*
+
+      - name: Strip the artifact-name prefix
+        working-directory: bindings/node/prebuilds
+        run: |
+          for dir in prebuild-*; do
+            mv "$dir" "${dir#prebuild-}"
+          done
+          echo "assembled:"
+          ls -1
+
+      - name: Install dependencies (Node)
+        working-directory: bindings/node
+        run: npm install --ignore-scripts
+
+      # prepublishOnly runs the prebuild check and compiles the TypeScript. The
+      # check is the point: it fails if any platform is missing its binary,
+      # which is the one packaging mistake that is invisible until a user hits
+      # it.
+      - name: Build the package
+        working-directory: bindings/node
+        run: npm run prepublishOnly
+
+      - name: Pack
+        working-directory: bindings/node
+        run: npm pack --pack-destination .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: bindings/node/ai-sdk-cpp-*.tgz
+          if-no-files-found: error

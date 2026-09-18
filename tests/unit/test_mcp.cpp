@@ -263,3 +263,61 @@ TEST_CASE("MCP progress notifications reach the handler", "[mcp]") {
     REQUIRE(*total == 100.0);
     REQUIRE(message == "working");
 }
+
+TEST_CASE("MCP tools are exposed server-qualified but call the bare name", "[mcp]") {
+    // The name a tool is exposed under is what the model is offered, what a
+    // permission policy is asked about, and what an approval prompt shows the
+    // user. A bare name is ambiguous as soon as two servers define the same
+    // tool, and lets a server expose "Bash" indistinguishably from the real
+    // one. Qualifying fixes both; the server itself must still be addressed by
+    // the name it published, since the prefix is ours.
+    boost::asio::io_context ioc;
+
+    std::string called_name;
+    auto handler = [&called_name](const std::string& out) -> std::optional<std::string> {
+        if (method_of(out) == "tools/call") {
+            auto parsed = json::parse(out);
+            auto& params = parsed.as_object()["params"].as_object();
+            called_name = std::string(params["name"].as_string());
+        }
+        return standard_handler(out);
+    };
+
+    auto client = make_client(handler);
+    run_void(client->connect(), ioc);
+    auto tools = run(client->list_tools(), ioc);
+    REQUIRE(tools.size() == 1);
+    REQUIRE(tools[0].name == "echo");  // what the server published
+
+    auto toolset = ai::mcp::mcp_tools_to_toolset(client, tools);
+
+    REQUIRE(toolset.size() == 1);
+    CHECK(toolset.find("mcp__test__echo") != nullptr);
+    CHECK(toolset.find("echo") == nullptr);
+
+    auto* def = toolset.find("mcp__test__echo");
+    REQUIRE(def != nullptr);
+    REQUIRE(def->execute.has_value());
+    run((*def->execute)(json::value(json::object{}), ai::ToolExecutionContext{}), ioc);
+
+    CHECK(called_name == "echo");
+}
+
+TEST_CASE("an unnamed MCP client exposes bare tool names", "[mcp]") {
+    // Qualification needs a server name to qualify with. The C entry point
+    // refuses to build a client without one, so this is only reachable from
+    // C++, where the constructor takes the name directly — pinned so the
+    // fallback is a decision rather than an accident.
+    boost::asio::io_context ioc;
+    auto transport = std::make_unique<ai::mcp::InMemoryTransport>();
+    transport->handler = standard_handler;
+    auto client = std::make_shared<ai::mcp::McpClient>(std::move(transport), "");
+
+    run_void(client->connect(), ioc);
+    auto tools = run(client->list_tools(), ioc);
+    auto toolset = ai::mcp::mcp_tools_to_toolset(client, tools);
+
+    REQUIRE(toolset.size() == 1);
+    CHECK(toolset.find("echo") != nullptr);
+    CHECK(toolset.find("mcp____echo") == nullptr);
+}

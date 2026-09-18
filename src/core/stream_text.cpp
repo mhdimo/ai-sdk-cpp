@@ -403,6 +403,10 @@ AsyncGenerator<StreamPart> stream_text_multi_step(
         final_result.warnings = steps.back().result.warnings;
     }
     final_result.steps = std::move(steps);
+    // Every tool call the whole run executed, matching what generate_text
+    // reports. Without this the same field is empty or populated depending only
+    // on which entry point the caller used.
+    final_result.tool_calls = std::move(all_tool_calls);
     sink->fulfill(std::move(final_result));
 }
 

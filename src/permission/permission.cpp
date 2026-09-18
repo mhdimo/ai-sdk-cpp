@@ -60,30 +60,44 @@ ToolSet with_permissions(ToolSet tools, PermissionPolicy policy, Approver approv
                 co_return co_await (*original)(std::move(input), std::move(ctx));
             }
 
-            PermissionDecision decision = PermissionDecision::Allow;
+            PermissionVerdict verdict{PermissionDecision::Allow};
             if (state->policy) {
-                decision = state->policy(tool_name, input);
+                verdict = state->policy(tool_name, input);
             }
+            std::string reason = std::move(verdict.reason);
 
-            if (decision == PermissionDecision::Ask) {
+            if (verdict.decision == PermissionDecision::Ask) {
                 if (state->approver) {
                     Approval approval = co_await state->approver(
                         tool_name, input, rationale_for(tool_name, input));
-                    decision = approval.decision;
+                    verdict.decision = approval.decision;
+                    // An approver that explains itself overrides the policy's
+                    // reason: it saw the same input and answered second.
+                    if (!approval.reason.empty()) {
+                        reason = std::move(approval.reason);
+                    }
                     if (approval.decision == PermissionDecision::Allow &&
                         approval.always_allow) {
                         state->always_allowed.insert(tool_name);
                     }
                 } else {
-                    // No interactive approver: fail closed.
-                    decision = PermissionDecision::Deny;
+                    // No interactive approver: fail closed. Say why -- this is
+                    // the one denial with nobody to explain it, and a model
+                    // given no reason will keep trying variations of the call.
+                    verdict.decision = PermissionDecision::Deny;
+                    reason = "no approver is configured to authorize this tool call";
                 }
             }
 
-            if (decision == PermissionDecision::Deny) {
+            if (verdict.decision == PermissionDecision::Deny) {
                 boost::json::object err;
                 err["error"] = "permission_denied";
                 err["tool"] = tool_name;
+                // Omitted rather than sent empty, so a consumer can tell "no
+                // reason was given" from "the reason was a blank string".
+                if (!reason.empty()) {
+                    err["message"] = reason;
+                }
                 co_return boost::json::value(std::move(err));
             }
 

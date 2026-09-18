@@ -4,7 +4,9 @@
 #include <ai/mcp/mcp_client.hpp>
 #include <ai/session/context_strategy.hpp>
 #include <ai/util/token_count.hpp>
+#include <ai/version.hpp>
 #include <ai/core/generate_text.hpp>
+
 #if defined(AI_SDK_PROVIDER_ANTHROPIC)
 #include <ai/providers/anthropic/anthropic.hpp>
 #endif
@@ -25,6 +27,7 @@
 #include <chrono>
 #include <string>
 #include <memory>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <mutex>
@@ -32,6 +35,53 @@
 #include <cstdlib>
 
 namespace json = boost::json;
+
+namespace {
+
+// Drive a task to completion, pumping `ioc` while doing so. Every blocking C
+// entry point waits this way, so it lives in one place.
+//
+// run_one() only blocks while the io_context has work armed, and most of what
+// the C API drives never arms any. The HTTP client bridges its blocking I/O
+// through a std::future and resumes the coroutine from a detached thread
+// (FutureAwaitable in src/http/client.cpp) rather than posting the resume to
+// the io_context. So `while (!task.done()) ioc.run_one();` returns from
+// run_one() immediately on every iteration for the whole call, burning a full
+// CPU core for as long as the request is in flight — on a server, a core per
+// concurrent request. Parking when run_one() reports no work caps that at
+// approximately zero; the cost is up to one sleep interval of added latency on
+// a resume, and the resume is happening on another thread regardless.
+//
+// restart() comes first because a run_one() that finds nothing stops the
+// context, and a stopped context returns 0 without executing handlers that get
+// queued afterwards. The batch path arms a timer on the io_context between
+// polls and depends on exactly that.
+template <typename TaskT>
+void drive_to_completion(TaskT& task, boost::asio::io_context& ioc) {
+    constexpr auto kMinIdle = std::chrono::microseconds(50);
+    constexpr auto kMaxIdle = std::chrono::microseconds(2000);
+
+    auto idle = kMinIdle;
+    task.start();
+    while (!task.done()) {
+        ioc.restart();
+        if (ioc.run_one() == 0) {
+            std::this_thread::sleep_for(idle);
+            // Back off while the io_context stays idle. Polling only gates
+            // noticing that the task finished — the work itself, and every
+            // streamed part, is delivered from another thread — so a tight poll
+            // buys responsiveness only in the last moments of a call and costs a
+            // proportional share of a core for the whole of a long one. Start
+            // short so a quick call stays quick, and stretch out so a slow one
+            // costs almost nothing.
+            idle = idle * 2 < kMaxIdle ? idle * 2 : kMaxIdle;
+        } else {
+            idle = kMinIdle;
+        }
+    }
+}
+
+} // namespace
 
 struct ai_context {
     boost::asio::io_context ioc;
@@ -161,10 +211,7 @@ static ai_status_t consume_stream_to_callback(
     }(std::move(stream), cb, ud, skip_final_finish);
 
     try {
-        consume.start();
-        while (!consume.done()) {
-            ioc.run_one();
-        }
+        drive_to_completion(consume, ioc);
         consume.get();
         return AI_OK;
     } catch (const std::exception& e) {
@@ -177,6 +224,36 @@ static ai_status_t consume_stream_to_callback(
 }
 
 /* -------------------------------------------------------------------------- */
+
+namespace {
+
+/// The buffer handed to a permission callback, zeroed so that a callback which
+/// writes nothing leaves an empty string -- which the core reads as "no
+/// explanation given".
+///
+/// Declared outside the extern "C" block below: it returns std::string, which
+/// is not a type C linkage can describe.
+class ReasonBuffer {
+public:
+    ReasonBuffer() { buf_[0] = '\0'; }
+
+    char* data() { return buf_; }
+
+    /// What the callback left behind. A callback that did not NUL-terminate
+    /// (a plain strcpy of AI_REASON_MAX bytes, say) would run past the end, so
+    /// the last byte is forced to NUL to make that impossible.
+    std::string str() const {
+        char safe[AI_REASON_MAX];
+        std::memcpy(safe, buf_, sizeof(safe));
+        safe[AI_REASON_MAX - 1] = '\0';
+        return std::string(safe);
+    }
+
+private:
+    char buf_[AI_REASON_MAX];
+};
+
+} // namespace
 
 extern "C" {
 
@@ -241,6 +318,8 @@ ai_provider_t ai_provider_create(ai_context_t ctx, const char* provider_name, ai
         if (!provider && name == "google") {
             ai::providers::google::GoogleOptions o{.io_context = ctx->ioc};
             if (api_key) o.api_key = *api_key;
+            if (opts.base_url) o.base_url = opts.base_url;
+            else if (const char* env = std::getenv("GOOGLE_BASE_URL"); env && *env) o.base_url = env;
             provider = ai::providers::google::create_google(std::move(o));
         }
 #endif
@@ -394,10 +473,7 @@ ai_status_t ai_generate_text(ai_generate_options_t opts, ai_generate_result_t* r
         }
 
         auto task = ai::generate_text(std::move(gen_opts));
-        task.start();
-        while (!task.done()) {
-            ctx->ioc.run_one();
-        }
+        drive_to_completion(task, ctx->ioc);
         auto gen_result = task.get();
 
         g_result_text = gen_result.text;
@@ -432,38 +508,33 @@ ai_status_t ai_stream_text(ai_generate_options_t opts, ai_stream_callback_fn cal
     auto* ctx = opts.model->ctx;
 
     try {
-        ai::Prompt prompt;
-        if (opts.system) {
-            prompt.push_back(ai::SystemMessage{.content = std::string(opts.system)});
-        }
+        // Goes through ai::stream_text rather than calling the model's
+        // do_stream() directly, so a tool call is executed and fed back to the
+        // model instead of being streamed to the caller and dropped.
+        ai::StreamTextOptions stream_opts;
+        stream_opts.model = opts.model->ptr;
+        stream_opts.max_steps = opts.max_steps > 0 ? opts.max_steps : 1;
+        if (opts.tools) stream_opts.tools = opts.tools->tools;
+        if (opts.system) stream_opts.system = std::string(opts.system);
         if (opts.messages_json) {
             auto messages = json::parse(opts.messages_json);
-            auto deserialized = ai::workflow::deserialize_prompt(messages.as_array());
-            for (auto& m : deserialized) prompt.push_back(std::move(m));
+            stream_opts.messages = ai::workflow::deserialize_prompt(messages.as_array());
         } else if (opts.prompt) {
-            ai::UserContent content;
-            content.push_back(ai::TextPart{.text = std::string(opts.prompt)});
-            prompt.push_back(ai::UserMessage{.content = std::move(content)});
+            stream_opts.prompt = std::string(opts.prompt);
         }
-
-        ai::CallOptions call_opts;
-        call_opts.prompt = std::move(prompt);
-        if (opts.max_output_tokens > 0) call_opts.max_output_tokens = opts.max_output_tokens;
-        if (opts.temperature >= 0) call_opts.temperature = opts.temperature;
+        if (opts.max_output_tokens > 0) stream_opts.max_output_tokens = opts.max_output_tokens;
+        if (opts.temperature >= 0) stream_opts.temperature = opts.temperature;
         if (opts.provider_options_json) {
             auto provider_options = json::parse(opts.provider_options_json);
             if (!provider_options.is_object()) {
                 ctx->last_error = "provider_options_json must be a JSON object";
                 return AI_ERROR_INVALID_ARGUMENT;
             }
-            call_opts.provider_options = provider_options.as_object();
+            stream_opts.provider_options = provider_options.as_object();
         }
 
-        auto task = opts.model->ptr->do_stream(std::move(call_opts));
-        task.start();
-        while (!task.done()) {
-            ctx->ioc.run_one();
-        }
+        auto task = ai::stream_text(std::move(stream_opts));
+        drive_to_completion(task, ctx->ioc);
         auto stream_result = task.get();
         return consume_stream_to_callback(
             std::move(stream_result.stream), ctx->ioc, callback, user_data, ctx);
@@ -530,10 +601,7 @@ ai_status_t ai_agent_call(ai_agent_t agent, const char* prompt, ai_generate_resu
 
     try {
         auto task = agent->agent.call(std::string(prompt));
-        task.start();
-        while (!task.done()) {
-            agent->ctx->ioc.run_one();
-        }
+        drive_to_completion(task, agent->ctx->ioc);
         auto agent_result = task.get();
 
         g_result_text = agent_result.text;
@@ -559,10 +627,7 @@ ai_status_t ai_agent_call_stream(ai_agent_t agent, const char* prompt, ai_stream
         // Run the agent's streaming tool loop, then dispatch each stream part
         // (text/tool/finish) to the C callback as it is produced.
         auto outer = agent->agent.stream(std::string(prompt));
-        outer.start();
-        while (!outer.done()) {
-            ctx->ioc.run_one();
-        }
+        drive_to_completion(outer, ctx->ioc);
         auto result = outer.get();
 
         return consume_stream_to_callback(
@@ -635,10 +700,11 @@ ai_status_t ai_batch_run(
         };
 
         auto task = ai::batch::run_batch(std::move(opts));
-        task.start();
-        while (!task.done()) {
-            ctx->ioc.run_one();
-        }
+        // run_batch waits between polls on an io_context timer, so it needs
+        // run_one() to actually execute handlers. drive_to_completion restarts
+        // the context between polls, which is what lets that timer fire after
+        // an earlier empty poll stopped it.
+        drive_to_completion(task, ctx->ioc);
         auto run_result = task.get();
 
         auto* storage = new BatchResultStorage();
@@ -770,10 +836,7 @@ ai_status_t ai_session_send(ai_session_t session, const char* prompt, ai_generat
     auto* ctx = session->ctx;
     try {
         auto task = session->session.send(std::string(prompt));
-        task.start();
-        while (!task.done()) {
-            ctx->ioc.run_one();
-        }
+        drive_to_completion(task, ctx->ioc);
         auto r = task.get();
         g_result_text = r.text;
         switch (r.finish_reason) {
@@ -877,10 +940,7 @@ ai_status_t ai_session_send_stream(
 
     try {
         auto outer = session->session.send_stream(std::string(prompt));
-        outer.start();
-        while (!outer.done()) {
-            ctx->ioc.run_one();
-        }
+        drive_to_completion(outer, ctx->ioc);
         auto result = outer.get();
 
         auto status = consume_stream_to_callback(
@@ -888,10 +948,7 @@ ai_status_t ai_session_send_stream(
         if (status != AI_OK) return status;
 
         auto full_result_task = std::move(result.full_result);
-        full_result_task.start();
-        while (!full_result_task.done()) {
-            ctx->ioc.run_one();
-        }
+        drive_to_completion(full_result_task, ctx->ioc);
         auto gen_result = full_result_task.get();
 
         // Dispatch executed tool results to callback
@@ -918,8 +975,7 @@ ai_status_t ai_session_send_stream(
         // Fire the post-turn hook (e.g. checkpoint writer) — best-effort.
         {
             auto hook = session->session.fire_turn_finish();
-            hook.start();
-            while (!hook.done()) ctx->ioc.run_one();
+            drive_to_completion(hook, ctx->ioc);
             try { hook.get(); } catch (...) {}
         }
 
@@ -974,14 +1030,74 @@ ai_tool_set_t ai_with_permissions(ai_tool_set_t tools, ai_permission_policy_fn p
     ai::PermissionPolicy p = [policy, user_data](const std::string& tool,
                                                   const boost::json::value& input) {
         std::string input_str = boost::json::serialize(input);
-        int d = policy(tool.c_str(), input_str.c_str(), user_data);
+        ReasonBuffer reason;
+        int d = policy(tool.c_str(), input_str.c_str(), reason.data(), user_data);
         switch (d) {
-        case AI_PERMISSION_ALLOW: return ai::PermissionDecision::Allow;
-        case AI_PERMISSION_DENY: return ai::PermissionDecision::Deny;
-        default: return ai::PermissionDecision::Ask;
+        case AI_PERMISSION_ALLOW: return ai::PermissionVerdict{ai::PermissionDecision::Allow};
+        case AI_PERMISSION_DENY:
+            return ai::PermissionVerdict{ai::PermissionDecision::Deny, reason.str()};
+        default:
+            return ai::PermissionVerdict{ai::PermissionDecision::Ask, reason.str()};
         }
     };
     out->tools = ai::with_permissions(std::move(tools->tools), p);
+    return out;
+}
+
+ai_tool_set_t ai_with_permissions_approver(ai_tool_set_t tools, ai_permission_policy_fn policy,
+                                           void* policy_user_data, ai_approver_fn approver,
+                                           void* approver_user_data) {
+    if (!tools || !policy) return nullptr;
+    auto* out = new ai_tool_set{};
+    ai::PermissionPolicy p = [policy, policy_user_data](const std::string& tool,
+                                                        const boost::json::value& input) {
+        std::string input_str = boost::json::serialize(input);
+        ReasonBuffer reason;
+        int d = policy(tool.c_str(), input_str.c_str(), reason.data(), policy_user_data);
+        switch (d) {
+        case AI_PERMISSION_ALLOW: return ai::PermissionVerdict{ai::PermissionDecision::Allow};
+        case AI_PERMISSION_DENY:
+            return ai::PermissionVerdict{ai::PermissionDecision::Deny, reason.str()};
+        default:
+            return ai::PermissionVerdict{ai::PermissionDecision::Ask, reason.str()};
+        }
+    };
+
+    // A NULL approver leaves `a` empty, which is exactly the fail-closed
+    // behaviour of ai_with_permissions.
+    ai::Approver a;
+    if (approver) {
+        a = [approver, approver_user_data](const std::string& tool,
+                                           const boost::json::value& input,
+                                           const std::string& rationale) -> ai::Task<ai::Approval> {
+            std::string input_str = boost::json::serialize(input);
+            ReasonBuffer reason;
+            int d = approver(tool.c_str(), input_str.c_str(), rationale.c_str(),
+                             reason.data(), approver_user_data);
+            // Fail closed: a verdict that is not one of the three is a bug in
+            // the caller, and running the tool anyway is the one reading that
+            // turns it into a security hole.
+            ai::Approval approval{};
+            // Left empty when the approver said nothing, which lets the
+            // policy's reason survive -- see the header.
+            approval.reason = reason.str();
+            switch (d) {
+            case AI_PERMISSION_ALLOW:
+                approval.decision = ai::PermissionDecision::Allow;
+                break;
+            case AI_PERMISSION_ALLOW_ALWAYS:
+                approval.decision = ai::PermissionDecision::Allow;
+                approval.always_allow = true;
+                break;
+            default:  // AI_PERMISSION_DENY, AI_PERMISSION_ASK, out of contract
+                approval.decision = ai::PermissionDecision::Deny;
+                break;
+            }
+            co_return approval;
+        };
+    }
+
+    out->tools = ai::with_permissions(std::move(tools->tools), p, std::move(a));
     return out;
 }
 
@@ -1037,6 +1153,22 @@ ai_tool_set_t ai_mcp_toolset_from_server(ai_context_t ctx, const char* config_js
         ai::mcp::McpServerConfig cfg;
         cfg.transport = (o.contains("transport") && o["transport"].is_string())
             ? std::string(o["transport"].as_string()) : "stdio";
+        if (o.contains("name") && o["name"].is_string())
+            cfg.name = std::string(o["name"].as_string());
+        // Required: the name is what qualifies every tool this server exposes
+        // (mcp__<name>__<tool>), which is the string a caller keys permission
+        // rules and approval prompts on. Without it the tools are addressable
+        // only by bare name, so one server can shadow another's tools -- or a
+        // built-in "Bash" -- and no rule can name the one it means. Refusing
+        // here is the fail-closed reading: an ambiguous toolset is worse than
+        // no toolset.
+        if (cfg.name.empty()) {
+            ctx->last_error =
+                "MCP config must include a non-empty \"name\": it qualifies every tool the "
+                "server exposes as mcp__<name>__<tool>, which is what permission rules and "
+                "approvers are keyed on.";
+            return nullptr;
+        }
         if (o.contains("command") && o["command"].is_string())
             cfg.command = std::string(o["command"].as_string());
         if (o.contains("args") && o["args"].is_array())
@@ -1053,14 +1185,12 @@ ai_tool_set_t ai_mcp_toolset_from_server(ai_context_t ctx, const char* config_js
 
         auto client = std::make_shared<ai::mcp::McpClient>(cfg);
         auto t = client->connect();
-        t.start();
-        while (!t.done()) ctx->ioc.run_one();
+        drive_to_completion(t, ctx->ioc);
         t.get();  // throws on connect failure
 
         // List tools (async, drive on ioc).
         auto lt = client->list_tools();
-        lt.start();
-        while (!lt.done()) ctx->ioc.run_one();
+        drive_to_completion(lt, ctx->ioc);
         auto mcp_tools = lt.get();
 
         auto tools = ai::mcp::mcp_tools_to_toolset(client, mcp_tools);
@@ -1072,7 +1202,7 @@ ai_tool_set_t ai_mcp_toolset_from_server(ai_context_t ctx, const char* config_js
 }
 
 const char* ai_sdk_version(void) {
-    return "0.1.0";
+    return ai::version();
 }
 
 } // extern "C"

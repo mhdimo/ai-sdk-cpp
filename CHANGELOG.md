@@ -3,20 +3,107 @@
 All notable changes to ai-sdk-cpp. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.0.0] - 2026-09-18
+
+The bindings stop being a preview. The Node binding is now covered by a
+hermetic test suite (mock provider server, no API keys) that runs in CI, and
+the defects that suite found are fixed — including six that blocked release.
+
+### Changed — BREAKING
+- **Node: `Session.send()` and `Agent.call()` are now `async`.** They return a
+  promise and no longer block the JS event loop for the whole turn. A turn that
+  calls a tool has to hand control back to the event loop the tool's own JS
+  runs on; blocking there deadlocked the process. `await` both. `generateText`
+  and `streamText` were already async and are unchanged.
+
+### Added — Node binding
+- **Test suite** (`bindings/node/test/`): 50 cases over the public surface —
+  every provider factory, tool-calling through each entry point, streaming
+  events, sessions, memory, batch, MCP, standard toolkit, permissions, and
+  tool-set merging. Hermetic: a mock provider server stands in for the vendor
+  APIs, so it needs no keys and no network. Cases that drive a JS tool callback
+  run out-of-process under a wall-clock budget, because a deadlock in one of
+  those blocks the event loop so completely that an in-process timeout could
+  never fire to fail the test.
+- **CI job** (`node-binding`) building the C library and running the suite.
+- `streamText` accepts `messages`, `tools`, and `maxSteps`.
+- `Session` with persistent memory (auto-inject recall + auto-compaction),
+  the checkpoint writer, and token usage on the stream finish event.
+- `mergeToolSets()`, `mcpToolsetFromServer()`, `standardToolkit()`,
+  `withPermissions()`, `MemoryStore`, `Batch`, and `Agent` extra tool sets.
+- Provider options can be passed through to agents from C and Node.
 
 ### Fixed
+- **`streamText` silently dropped tool calls.** It called the model's
+  `do_stream()` directly, so a tool call was streamed to the caller and never
+  executed. It now goes through `ai::stream_text`, which runs the tool loop —
+  fixed in the C binding, so the Python, Rust, and Go bindings inherit it.
+- **A tool call hung the blocking entry points at 100% CPU forever.** The C
+  binding busy-waits on the event loop while the coroutine awaits a JS tool
+  callback, but the callback could only run on the event loop the caller was
+  blocking. Tool callbacks now run on a worker thread and resolve a promise.
+- **`Batch.run()` hung at 100% CPU**, having polled exactly once. `run_batch()`
+  waits between polls on an event-loop timer; an in-flight HTTP call left the
+  loop with no queued work, which *stops* it, so the timer could never fire.
+  The driver now restarts the loop before each `run_one()`.
+- **Batch results carried the wrong `customId`** — every item but the last got
+  a dangling pointer, because request strings were stored via `c_str()` while
+  the container they lived in was still reallocating.
+- **`withPermissions()` aborted the process** (`Fatal error in
+  v8::HandleScope::CreateHandle`): the policy callback called into JS from the
+  tool's worker thread, which has no handle scope. It now goes through a
+  `ThreadSafeFunction`.
+- **Empty `text_delta` events rendered as the literal string `"undefined"`.**
+  Providers legitimately emit empty deltas between real tokens; events whose
+  payload is text now always carry a string.
+- **`createGoogle` ignored `baseUrl`** and had no `GOOGLE_BASE_URL` env
+  fallback, so the provider could not be pointed anywhere but the default host.
 - **`Task` start-then-await**: `co_await` on a `Task` that was already
   `start()`ed re-entered the coroutine mid-await and read an empty result
   (silent nulls / UB). `await_suspend` now registers the continuation and
   suspends for in-flight tasks; only fresh tasks are launched. Move
   construction carries the started flag.
+- **Checkpoint writer never fired for streamed turns**: `send_stream` did not
+  increment the session turn counter.
+- **Use-after-free on GC** in the Node tool callback path (`SIGTRAP`).
 
 ### Changed
 - **Parallel tool execution**: `execute_tools` (generate + stream paths)
   launches all tool calls in a step before awaiting results, so independent
   calls interleave on the event loop instead of serializing behind the slowest
   tool. Results stay in tool-call order; per-call error isolation unchanged.
+- **Provider-scoped reasoning effort**, and an opt-in checkpoint summarizer
+  with a configurable proactive-compaction threshold.
+- **The version string has one source of truth.** `ai_sdk_version()` and the
+  MCP `clientInfo` handshake are compiled from the CMake project version
+  (`include/ai/version.hpp`) instead of a retyped literal, so they cannot drift
+  from the release number the package manifests carry. A test asserts the
+  binding's `version()` and `package.json` agree.
+
+### Tests
+- 117 offline unit tests (`ctest`), plus the 50-case Node suite. Both run in CI
+  on every push; neither needs an API key or network access.
+- `scripts/coverage.sh` reports what those tests actually exercise (Clang
+  source-based coverage). It covers the SDK but not the socket layer or the C
+  binding — the unit tests substitute their own `IHttpClient`, so those are
+  covered by the Node suite instead. The script says so in its output.
+
+### Notes & known limitations
+- **An ambient `ANTHROPIC_AUTH_TOKEN` outranks an explicitly passed `apiKey`.**
+  The Anthropic provider advertises two credentials and prefers the Bearer
+  token (`docs/providers.md`), resolving each independently, so if the
+  environment carries `ANTHROPIC_AUTH_TOKEN` — which it does for anyone running
+  Claude Code against an Anthropic-compatible gateway — `createAnthropic({
+  apiKey })` authenticates with the ambient token instead. Requests fail, or
+  are billed elsewhere, with nothing in the error to say why. Unset the
+  variable, or set `authToken` deliberately, if you meant the key you passed.
+  Changing the precedence is a candidate for a future release, not this one.
+- **Streaming reports failures as a terminal `error` event, not a throw.**
+  `streamText`/`sendStream` yield `{ type: 'error' }` and end; they do not
+  reject. Callers must check for it.
+- **Google** compiles and is wired through `createGoogle` (including
+  `baseUrl`), but has not been exercised against the live API — treat it as
+  experimental.
 
 ## [0.1.0] - 2026-06-22
 

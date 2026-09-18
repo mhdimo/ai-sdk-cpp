@@ -1,9 +1,11 @@
 #include <napi.h>
 #include "ai_sdk.h"
+#include <cstdio>
 #include <string>
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <map>
 #include <future>
@@ -347,6 +349,84 @@ void ToolSetWrapper::AddTool(const Napi::CallbackInfo& info) {
     tool_callbacks_.push_back(cb_data);
 }
 
+// --- Async blocking calls: worker thread + Promise ---
+//
+// generateText / agent.call / session.send run their C call on a worker thread
+// and return a Promise. The C call drives an io_context to completion, so it
+// occupies its thread for the whole turn — and a tool callback is a JS function
+// that can only run on the JS thread. Blocking the JS thread therefore
+// deadlocks as soon as a model returns a tool call: the tool waits for the JS
+// thread, which is waiting for the call. The streaming entry points already
+// avoid this by running on a worker thread; these now match.
+//
+// The C result's char* fields die with it, so the worker copies them out and
+// the JS thread turns them into an object.
+
+struct BlockingCallResult {
+    explicit BlockingCallResult(napi_env env) : deferred(env) {}
+
+    Napi::Promise::Deferred deferred;
+    bool ok = false;
+    std::string error;
+    std::string text;
+    std::string finishReason;
+    int inputTokens = 0;
+    int outputTokens = 0;
+    int steps = 0;
+
+    /** Copy out a finished C call and free it (every path frees exactly once). */
+    void take(ai_status_t status, ai_generate_result_t& r, const char* fallback) {
+        ok = (status == AI_OK);
+        if (ok) {
+            text = r.text ? r.text : "";
+            finishReason = r.finish_reason ? r.finish_reason : "stop";
+            inputTokens = r.input_tokens;
+            outputTokens = r.output_tokens;
+            steps = r.steps;
+        } else {
+            error = r.text ? r.text : fallback;
+        }
+        ai_generate_result_free(&r);
+    }
+};
+
+// Settles the promise on the JS thread once the worker is done.
+static void ResolveBlockingCall(Napi::Env env, Napi::Function, BlockingCallResult* p) {
+    if (!p->ok) {
+        p->deferred.Reject(Napi::Error::New(env, p->error).Value());
+    } else {
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("text", Napi::String::New(env, p->text));
+        obj.Set("finishReason", Napi::String::New(env, p->finishReason));
+        obj.Set("inputTokens", Napi::Number::New(env, p->inputTokens));
+        obj.Set("outputTokens", Napi::Number::New(env, p->outputTokens));
+        obj.Set("steps", Napi::Number::New(env, p->steps));
+        p->deferred.Resolve(obj);
+    }
+    delete p;
+}
+
+// Run `work` on a worker thread and settle the returned promise on the JS
+// thread. `work` receives the result slot to fill and must not touch Napi
+// values off the JS thread.
+template <typename F>
+static Napi::Promise RunBlockingAsync(Napi::Env env, F work) {
+    auto* p = new BlockingCallResult(env);
+
+    Napi::ThreadSafeFunction tsfn = Napi::ThreadSafeFunction::New(
+        env,
+        Napi::Function::New(env, [](const Napi::CallbackInfo& i) { return i.Env().Undefined(); }),
+        "ai-blocking", 0, 1);
+
+    std::thread([p, tsfn, work = std::move(work)]() mutable {
+        work(*p);
+        tsfn.NonBlockingCall(p, ResolveBlockingCall);
+        tsfn.Release();
+    }).detach();
+
+    return p->deferred.Promise();
+}
+
 // --- AgentWrapper ---
 
 Napi::Object AgentWrapper::Init(Napi::Env env, Napi::Object exports) {
@@ -415,25 +495,13 @@ Napi::Value AgentWrapper::Call(const Napi::CallbackInfo& info) {
     }
 
     std::string prompt = info[0].As<Napi::String>().Utf8Value();
-    ai_generate_result_t result = {};
+    ai_agent_t agent = agent_;
 
-    ai_status_t status = ai_agent_call(agent_, prompt.c_str(), &result);
-    if (status != AI_OK) {
-        std::string msg = result.text ? result.text : "Agent call failed";
-        ai_generate_result_free(&result);
-        Napi::Error::New(env, msg).ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-
-    Napi::Object obj = Napi::Object::New(env);
-    obj.Set("text", Napi::String::New(env, result.text ? result.text : ""));
-    obj.Set("finishReason", Napi::String::New(env, result.finish_reason ? result.finish_reason : "stop"));
-    obj.Set("inputTokens", Napi::Number::New(env, result.input_tokens));
-    obj.Set("outputTokens", Napi::Number::New(env, result.output_tokens));
-    obj.Set("steps", Napi::Number::New(env, result.steps));
-
-    ai_generate_result_free(&result);
-    return obj;
+    return RunBlockingAsync(env, [agent, prompt](BlockingCallResult& out) {
+        ai_generate_result_t result = {};
+        ai_status_t status = ai_agent_call(agent, prompt.c_str(), &result);
+        out.take(status, result, "Agent call failed");
+    });
 }
 
 // --- Async streaming: background thread + ThreadSafeFunction ---
@@ -531,6 +599,14 @@ static void RunStreamAsync(Napi::Env env, Napi::Function callback, F cCall) {
 
 // --- Free functions ---
 
+// Owns the strings ai_generate_options_t points into, so they stay alive for
+// the whole worker-thread call. Heap-allocated and never copied, so the
+// char* pointers taken here stay valid.
+struct GenerateRequest {
+    std::string prompt, system, messages, providerOptions;
+    ai_generate_options_t opts = {};
+};
+
 Napi::Value GenerateText(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
 
@@ -543,65 +619,51 @@ Napi::Value GenerateText(const Napi::CallbackInfo& info) {
     auto* model_wrap = Napi::ObjectWrap<ModelWrapper>::Unwrap(model_obj);
     auto opts_obj = info[1].As<Napi::Object>();
 
-    ai_generate_options_t opts = {};
-    opts.model = model_wrap->handle();
-    opts.temperature = -1;
-
-    std::string prompt_str, system_str, messages_str, provider_options_str;
+    auto req = std::make_unique<GenerateRequest>();
+    req->opts.model = model_wrap->handle();
+    req->opts.temperature = -1;
 
     if (opts_obj.Has("prompt") && !opts_obj.Get("prompt").IsUndefined()) {
-        prompt_str = opts_obj.Get("prompt").As<Napi::String>().Utf8Value();
-        opts.prompt = prompt_str.c_str();
+        req->prompt = opts_obj.Get("prompt").As<Napi::String>().Utf8Value();
+        req->opts.prompt = req->prompt.c_str();
     }
     if (opts_obj.Has("system") && !opts_obj.Get("system").IsUndefined()) {
-        system_str = opts_obj.Get("system").As<Napi::String>().Utf8Value();
-        opts.system = system_str.c_str();
+        req->system = opts_obj.Get("system").As<Napi::String>().Utf8Value();
+        req->opts.system = req->system.c_str();
     }
     if (opts_obj.Has("messagesJson") && !opts_obj.Get("messagesJson").IsUndefined()) {
-        messages_str = opts_obj.Get("messagesJson").As<Napi::String>().Utf8Value();
-        opts.messages_json = messages_str.c_str();
+        req->messages = opts_obj.Get("messagesJson").As<Napi::String>().Utf8Value();
+        req->opts.messages_json = req->messages.c_str();
     }
     if (opts_obj.Has("providerOptions") && !opts_obj.Get("providerOptions").IsUndefined()) {
         auto json = env.Global().Get("JSON").As<Napi::Object>();
         auto stringify = json.Get("stringify").As<Napi::Function>();
-        provider_options_str = stringify.Call(json, {opts_obj.Get("providerOptions")})
+        req->providerOptions = stringify.Call(json, {opts_obj.Get("providerOptions")})
             .As<Napi::String>().Utf8Value();
-        opts.provider_options_json = provider_options_str.c_str();
+        req->opts.provider_options_json = req->providerOptions.c_str();
     }
     if (opts_obj.Has("maxSteps") && !opts_obj.Get("maxSteps").IsUndefined()) {
-        opts.max_steps = opts_obj.Get("maxSteps").As<Napi::Number>().Int32Value();
+        req->opts.max_steps = opts_obj.Get("maxSteps").As<Napi::Number>().Int32Value();
     }
     if (opts_obj.Has("maxOutputTokens") && !opts_obj.Get("maxOutputTokens").IsUndefined()) {
-        opts.max_output_tokens = opts_obj.Get("maxOutputTokens").As<Napi::Number>().Int32Value();
+        req->opts.max_output_tokens = opts_obj.Get("maxOutputTokens").As<Napi::Number>().Int32Value();
     }
     if (opts_obj.Has("temperature") && !opts_obj.Get("temperature").IsUndefined()) {
-        opts.temperature = opts_obj.Get("temperature").As<Napi::Number>().DoubleValue();
+        req->opts.temperature = opts_obj.Get("temperature").As<Napi::Number>().DoubleValue();
     }
     if (opts_obj.Has("toolSet") && !opts_obj.Get("toolSet").IsUndefined()) {
         auto ts_obj = opts_obj.Get("toolSet").As<Napi::Object>();
         auto* ts_wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(ts_obj);
-        opts.tools = ts_wrap->handle();
+        req->opts.tools = ts_wrap->handle();
     }
 
-    ai_generate_result_t result = {};
-    ai_status_t status = ai_generate_text(opts, &result);
-
-    if (status != AI_OK) {
-        std::string msg = result.text ? result.text : ai_status_message(status);
-        ai_generate_result_free(&result);
-        Napi::Error::New(env, msg).ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-
-    Napi::Object obj = Napi::Object::New(env);
-    obj.Set("text", Napi::String::New(env, result.text ? result.text : ""));
-    obj.Set("finishReason", Napi::String::New(env, result.finish_reason ? result.finish_reason : "stop"));
-    obj.Set("inputTokens", Napi::Number::New(env, result.input_tokens));
-    obj.Set("outputTokens", Napi::Number::New(env, result.output_tokens));
-    obj.Set("steps", Napi::Number::New(env, result.steps));
-
-    ai_generate_result_free(&result);
-    return obj;
+    auto* raw = req.release();
+    return RunBlockingAsync(env, [raw](BlockingCallResult& out) {
+        std::unique_ptr<GenerateRequest> req(raw);
+        ai_generate_result_t result = {};
+        ai_status_t status = ai_generate_text(req->opts, &result);
+        out.take(status, result, ai_status_message(status));
+    });
 }
 
 Napi::Value StreamText(const Napi::CallbackInfo& info) {
@@ -770,22 +832,13 @@ Napi::Value SessionWrapper::Send(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
     std::string prompt = info[0].As<Napi::String>().Utf8Value();
-    ai_generate_result_t result = {};
-    ai_status_t status = ai_session_send(session_, prompt.c_str(), &result);
-    if (status != AI_OK) {
-        std::string msg = result.text ? result.text : "Session send failed";
-        ai_generate_result_free(&result);
-        Napi::Error::New(env, msg).ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    Napi::Object obj = Napi::Object::New(env);
-    obj.Set("text", Napi::String::New(env, result.text ? result.text : ""));
-    obj.Set("finishReason", Napi::String::New(env, result.finish_reason ? result.finish_reason : "stop"));
-    obj.Set("inputTokens", Napi::Number::New(env, result.input_tokens));
-    obj.Set("outputTokens", Napi::Number::New(env, result.output_tokens));
-    obj.Set("steps", Napi::Number::New(env, result.steps));
-    ai_generate_result_free(&result);
-    return obj;
+    ai_session_t session = session_;
+
+    return RunBlockingAsync(env, [session, prompt](BlockingCallResult& out) {
+        ai_generate_result_t result = {};
+        ai_status_t status = ai_session_send(session, prompt.c_str(), &result);
+        out.take(status, result, "Session send failed");
+    });
 }
 
 Napi::Value SessionWrapper::SendStream(const Napi::CallbackInfo& info) {
@@ -848,6 +901,215 @@ Napi::Value StandardToolkit(const Napi::CallbackInfo& info) {
     return obj;
 }
 
+// Permission policies are JS functions, but the tool they gate executes on the
+// call's worker thread. Calling into JS from there without a HandleScope is a
+// hard V8 abort, so the policy goes through a ThreadSafeFunction and the worker
+// blocks on the result — the same bridge the tool callbacks use.
+struct PermissionCallbackData {
+    Napi::ThreadSafeFunction tsfn;
+    Napi::FunctionReference callback;
+};
+
+/** A verdict plus the sentence to show the model when it refuses. */
+struct Verdict {
+    int decision = AI_PERMISSION_DENY;
+    std::string reason;
+};
+
+/// Read a decision, and an optional explanation, out of whatever the JS side
+/// returned. Accepts a bare number — the original shape, and still the common
+/// one — or `{ decision, reason }`. Anything else is not a decision, and an
+/// absent one must fail closed.
+static Verdict verdict_from(const Napi::Value& v) {
+    Verdict out;
+    if (v.IsNumber()) {
+        out.decision = v.As<Napi::Number>().Int32Value();
+        return out;
+    }
+    if (v.IsObject()) {
+        Napi::Object obj = v.As<Napi::Object>();
+        Napi::Value d = obj.Get("decision");
+        out.decision = d.IsNumber() ? d.As<Napi::Number>().Int32Value() : AI_PERMISSION_DENY;
+        Napi::Value r = obj.Get("reason");
+        if (r.IsString()) {
+            out.reason = r.As<Napi::String>().Utf8Value();
+        }
+        return out;
+    }
+    return out;  // not a number, not an object -> deny
+}
+
+/// Copy a JS verdict's reason into the SDK's buffer, truncated to fit.
+static void set_reason(char* buf, const std::string& text) {
+    if (!buf) return;
+    std::snprintf(buf, AI_REASON_MAX, "%s", text.c_str());
+}
+
+
+static std::mutex g_permission_mutex;
+static std::map<uint64_t, std::shared_ptr<std::promise<Verdict>>> g_permission_pending;
+
+struct PermissionPayload {
+    uint64_t id;
+    std::string tool;
+    std::string input;
+};
+
+// Runs on the JS thread.
+static void PermissionReceiver(Napi::Env env, Napi::Function jsPolicyFn, PermissionPayload* p) {
+    Napi::Value result = jsPolicyFn.Call({
+        Napi::String::New(env, p->tool),
+        Napi::String::New(env, p->input),
+    });
+    Verdict verdict = verdict_from(result);
+
+    std::shared_ptr<std::promise<Verdict>> prom;
+    {
+        std::lock_guard<std::mutex> lk(g_permission_mutex);
+        auto it = g_permission_pending.find(p->id);
+        if (it != g_permission_pending.end()) prom = it->second;
+    }
+    if (prom) prom->set_value(std::move(verdict));
+    delete p;
+}
+
+// --- Interactive approver: the optional third argument to withPermissions ---
+//
+// The policy above answers Allow/Deny/Ask synchronously. Ask is where the
+// interesting case lives (an MCP tool no settings rule mentions), and the
+// engine hands it to an Approver — which, unlike the policy, is expected to be
+// async: it awaits a UI prompt. So it goes over the same bridge the JS tools
+// use: the worker thread parks on a promise, the JS call runs on the JS
+// thread, and the verdict comes back through __resolveApproval.
+//
+// Without this, `Ask` fails closed to Deny, which is why every MCP tool call
+// used to be refused no matter what.
+
+struct ApprovalCallbackData {
+    Napi::ThreadSafeFunction tsfn;
+    Napi::FunctionReference callback;
+};
+
+static std::mutex g_approval_mutex;
+static std::map<uint64_t, std::shared_ptr<std::promise<Verdict>>> g_approval_pending;
+static Napi::FunctionReference g_resolve_approval_ref;
+
+struct ApprovalPayload {
+    uint64_t id;
+    std::string tool;
+    std::string input;
+    std::string rationale;
+};
+
+
+static void settle_approval(uint64_t id, Verdict verdict) {
+    std::shared_ptr<std::promise<Verdict>> prom;
+    {
+        std::lock_guard<std::mutex> lk(g_approval_mutex);
+        auto it = g_approval_pending.find(id);
+        if (it != g_approval_pending.end()) prom = it->second;
+    }
+    if (prom) prom->set_value(std::move(verdict));
+}
+
+/** __resolveApproval(id, decision) — the JS side's answer to a parked ask. */
+static Napi::Value ResolveApproval(const Napi::CallbackInfo& info) {
+    uint64_t id = (uint64_t)info[0].As<Napi::Number>().DoubleValue();
+    settle_approval(id, info.Length() > 1 ? verdict_from(info[1]) : Verdict{});
+    return info.Env().Undefined();
+}
+
+/** Runs on the JS thread. */
+static void ApproverReceiver(Napi::Env env, Napi::Function jsApproverFn, ApprovalPayload* p) {
+    uint64_t id = p->id;
+    Napi::Value ret = jsApproverFn.Call({Napi::String::New(env, p->tool),
+                                         Napi::String::New(env, p->input),
+                                         Napi::String::New(env, p->rationale)});
+    delete p;
+
+    if (ret.IsObject() && ret.As<Napi::Object>().Has("then")) {
+        // The usual shape: a prompt that resolves when the user answers.
+        Napi::Object promiseObj = ret.As<Napi::Object>();
+        Napi::Function then = promiseObj.Get("then").As<Napi::Function>();
+        Napi::Function onFulfill = Napi::Function::New(env, [id](const Napi::CallbackInfo& info) {
+            settle_approval(id, info.Length() > 0 ? verdict_from(info[0]) : Verdict{});
+            return info.Env().Undefined();
+        });
+        // A prompt that threw is not an approval.
+        Napi::Function onReject = Napi::Function::New(env, [id](const Napi::CallbackInfo& info) {
+            settle_approval(id, Verdict{});
+            return info.Env().Undefined();
+        });
+        then.Call(promiseObj, { onFulfill, onReject });
+        return;
+    }
+    settle_approval(id, verdict_from(ret));
+}
+
+/** Build the bridge state for one approver. Deliberately never freed, same
+ *  reasoning as PermissionCallbackData: the gated tool set outlives this call
+ *  and holds this pointer. */
+static ApprovalCallbackData* MakeApprovalCallbackData(Napi::Env env, Napi::Function approver_fn) {
+    auto* data = new ApprovalCallbackData();
+    data->callback = Napi::Persistent(approver_fn);
+    data->tsfn = Napi::ThreadSafeFunction::New(env, approver_fn, "ai-approver", 0, 1);
+    data->tsfn.Unref(env);
+    return data;
+}
+
+/** The C side of the bridge. `ud` is the ApprovalCallbackData built above —
+ *  a captureless function pointer, so the pointer has to travel as user data
+ *  rather than through the closure. */
+static int ApproverBridge(const char* tool, const char* input_json, const char* rationale,
+                          char* reason_buf, void* ud) {
+    auto* data = static_cast<ApprovalCallbackData*>(ud);
+    std::string tool_s = tool ? tool : "";
+    std::string input_s = input_json ? input_json : "";
+    std::string rationale_s = rationale ? rationale : "";
+
+    // A blocking C API call runs on the JS thread, so a prompt awaited
+    // here would deadlock the thread that has to render it. Answer from
+    // the value if it is already one, and otherwise fail closed: the
+    // streaming path — where prompts actually happen — arrives on a
+    // worker thread and takes the parking branch below.
+    if (std::this_thread::get_id() == g_main_thread_id) {
+        Napi::Env e = data->callback.Env();
+        Napi::Value result = data->callback.Call({Napi::String::New(e, tool_s),
+                                                  Napi::String::New(e, input_s),
+                                                  Napi::String::New(e, rationale_s)});
+        if (result.IsObject() && result.As<Napi::Object>().Has("then")) {
+            // Nobody is waiting for this verdict, and an unhandled
+            // rejection would take the host process down with it.
+            Napi::Object p = result.As<Napi::Object>();
+            Napi::Function noop = Napi::Function::New(e, [](const Napi::CallbackInfo& i) {
+                return i.Env().Undefined();
+            });
+            p.Get("then").As<Napi::Function>().Call(p, { noop, noop });
+            return AI_PERMISSION_DENY;
+        }
+        Verdict v = verdict_from(result);
+        set_reason(reason_buf, v.reason);
+        return v.decision;
+    }
+
+    auto promise = std::make_shared<std::promise<Verdict>>();
+    auto fut = promise->get_future();
+    uint64_t id = g_call_id.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lk(g_approval_mutex);
+        g_approval_pending[id] = promise;
+    }
+    data->tsfn.NonBlockingCall(new ApprovalPayload{ id, tool_s, input_s, rationale_s },
+                               ApproverReceiver);
+    Verdict verdict = fut.get();
+    {
+        std::lock_guard<std::mutex> lk(g_approval_mutex);
+        g_approval_pending.erase(id);
+    }
+    set_reason(reason_buf, verdict.reason);
+    return verdict.decision;
+}
+
 Napi::Value WithPermissions(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 2) {
@@ -857,20 +1119,59 @@ Napi::Value WithPermissions(const Napi::CallbackInfo& info) {
     auto tools_obj = info[0].As<Napi::Object>();
     auto* tools_wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(tools_obj);
     Napi::Function policy_fn = info[1].As<Napi::Function>();
-    auto* fn_ref = new Napi::FunctionReference();
-    *fn_ref = Napi::Persistent(policy_fn);
+
+    // Deliberately never freed: the gated tool set outlives this call and its
+    // execute functions hold this pointer (same reasoning as ToolCallbackData).
+    auto* data = new PermissionCallbackData();
+    data->callback = Napi::Persistent(policy_fn);
+    data->tsfn = Napi::ThreadSafeFunction::New(env, policy_fn, "ai-permission", 0, 1);
+    data->tsfn.Unref(env);
 
     ai_permission_policy_fn c_fn = [](const char* tool, const char* input_json,
-                                      void* ud) -> int {
-        auto* ref = static_cast<Napi::FunctionReference*>(ud);
-        Napi::Env e = ref->Env();
-        Napi::Value result = ref->Call({Napi::String::New(e, tool),
-                                        Napi::String::New(e, input_json)});
-        return result.IsNumber() ? result.As<Napi::Number>().Int32Value()
-                                 : AI_PERMISSION_DENY;
+                                      char* reason_buf, void* ud) -> int {
+        auto* data = static_cast<PermissionCallbackData*>(ud);
+        std::string tool_s = tool ? tool : "";
+        std::string input_s = input_json ? input_json : "";
+
+        // Main-thread callers (e.g. a blocking C API call) can run the policy
+        // inline; a TSFN round trip there would deadlock the JS thread.
+        if (std::this_thread::get_id() == g_main_thread_id) {
+            Napi::Env e = data->callback.Env();
+            Napi::Value result = data->callback.Call({Napi::String::New(e, tool_s),
+                                                      Napi::String::New(e, input_s)});
+            Verdict v = verdict_from(result);
+            set_reason(reason_buf, v.reason);
+            return v.decision;
+        }
+
+        auto promise = std::make_shared<std::promise<Verdict>>();
+        auto fut = promise->get_future();
+        uint64_t id = g_call_id.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lk(g_permission_mutex);
+            g_permission_pending[id] = promise;
+        }
+        data->tsfn.NonBlockingCall(new PermissionPayload{ id, tool_s, input_s },
+                                   PermissionReceiver);
+        Verdict verdict = fut.get();
+        {
+            std::lock_guard<std::mutex> lk(g_permission_mutex);
+            g_permission_pending.erase(id);
+        }
+        set_reason(reason_buf, verdict.reason);
+        return verdict.decision;
     };
 
-    ai_tool_set_t gated = ai_with_permissions(tools_wrap->handle(), c_fn, fn_ref);
+    // Third argument opt-in: without it an `Ask` stays a fail-closed Deny, so
+    // existing two-argument callers keep the behaviour they already have.
+    ai_tool_set_t gated = nullptr;
+    if (info.Length() > 2 && info[2].IsFunction()) {
+        gated = ai_with_permissions_approver(
+            tools_wrap->handle(), c_fn, data, ApproverBridge,
+            MakeApprovalCallbackData(env, info[2].As<Napi::Function>()));
+    } else {
+        gated = ai_with_permissions(tools_wrap->handle(), c_fn, data);
+    }
     Napi::Object obj = g_toolset_constructor.New({});
     auto* out_wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(obj);
     out_wrap->SetTools(gated);
@@ -1013,8 +1314,13 @@ Napi::Value BatchWrapper::Run(const Napi::CallbackInfo& info) {
     int count = reqs.Length();
     int poll_ms = (info.Length() > 1 && info[1].IsNumber()) ? info[1].As<Napi::Number>().Int32Value() : 5000;
 
-    // String storage must outlive the call.
+    // String storage must outlive the call, and the c_str() pointers below are
+    // taken before the vectors stop growing — so reserve up front, or every
+    // entry but the last dangles once push_back reallocates.
     std::vector<std::string> custom_ids, prompts, systems;
+    custom_ids.reserve(count);
+    prompts.reserve(count);
+    systems.reserve(count);
     std::vector<ai_batch_request_t> creqs(count);
     for (int i = 0; i < count; ++i) {
         auto r = reqs.Get(i).As<Napi::Object>();
@@ -1060,6 +1366,8 @@ Napi::Value BatchWrapper::Run(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     g_main_thread_id = std::this_thread::get_id();
     g_resolve_ref = Napi::Persistent(Napi::Function::New(env, ResolveToolCall, "__resolveToolCall"));
+    g_resolve_approval_ref =
+        Napi::Persistent(Napi::Function::New(env, ResolveApproval, "__resolveApproval"));
 
     ContextWrapper::Init(env, exports);
     ProviderWrapper::Init(env, exports);
@@ -1077,6 +1385,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("mergeToolSets", Napi::Function::New(env, MergeToolSets));
     exports.Set("mcpToolsetFromServer", Napi::Function::New(env, McpToolsetFromServer));
     exports.Set("version", Napi::Function::New(env, GetVersion));
+    // Feature flag for the third `withPermissions` argument — a JS shim that
+    // passed an approver to an older addon would have it silently ignored.
+    exports.Set("supportsApprover", Napi::Boolean::New(env, true));
 
     return exports;
 }

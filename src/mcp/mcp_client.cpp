@@ -1,5 +1,6 @@
 #include <ai/mcp/mcp_client.hpp>
 #include <ai/util/json.hpp>
+#include <ai/version.hpp>
 #include <boost/json.hpp>
 
 #include <atomic>
@@ -191,7 +192,7 @@ Task<void> McpClient::connect() {
 
     json::object init_params;
     init_params["protocolVersion"] = "2024-11-05";
-    init_params["clientInfo"] = json::object{{"name", "ai-sdk-cpp"}, {"version", "0.1.0"}};
+    init_params["clientInfo"] = json::object{{"name", "ai-sdk-cpp"}, {"version", ai::version()}};
     init_params["capabilities"] = json::object{};
     impl_->send_request("initialize", json::value(init_params));
     impl_->send_notification("notifications/initialized");
@@ -377,19 +378,33 @@ Task<std::vector<McpPromptMessage>> McpClient::get_prompt(
 
 ai::ToolSet mcp_tools_to_toolset(std::shared_ptr<McpClient> client,
                                  const std::vector<McpTool>& tools) {
+    const std::string& server = client->server_name();
     ToolSet toolset;
     for (auto& mcp_tool : tools) {
-        auto tool_name = mcp_tool.name;
+        // Server-qualified, as mcp__<server>__<tool>. A bare name is ambiguous
+        // the moment two servers expose the same tool, which makes a permission
+        // rule keyed on that name unexpressible — "allow add_numbers" cannot say
+        // which server it means, and an "always allow" the user grants for one
+        // server would silently cover the other. It is also a shadowing hazard:
+        // a server offering a tool called "Bash" or "Write" is then
+        // indistinguishable from the real one in a rule or an approval prompt.
+        //
+        // The prefix is ours, not the server's, so call_tool below still speaks
+        // the bare name. An unnamed client cannot be qualified this way and
+        // keeps bare names; the C entry point refuses to build one.
+        const std::string bare_name = mcp_tool.name;
+        std::string exposed =
+            server.empty() ? bare_name : "mcp__" + server + "__" + bare_name;
         auto captured_client = client;
         ToolDefinition def{
-            .name = mcp_tool.name,
+            .name = std::move(exposed),
             .description = mcp_tool.description,
             .input_schema = mcp_tool.input_schema,
             .strict = false,
-            .execute = [captured_client, tool_name](
+            .execute = [captured_client, bare_name](
                 boost::json::value input, ToolExecutionContext
             ) -> Task<boost::json::value> {
-                co_return co_await captured_client->call_tool(tool_name, std::move(input));
+                co_return co_await captured_client->call_tool(bare_name, std::move(input));
             },
         };
         toolset.add(std::move(def));

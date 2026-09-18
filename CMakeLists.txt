@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ai-sdk-cpp VERSION 0.1.0 LANGUAGES CXX)
+project(ai-sdk-cpp VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,27 @@ option(AI_SDK_PROVIDER_MOONSHOTAI "Build MoonshotAI provider" ON)
 option(AI_SDK_PROVIDER_ZAI "Build z.ai (GLM) provider" ON)
 option(AI_SDK_PROVIDER_BEDROCK "Build Amazon Bedrock provider" ON)
 option(AI_SDK_PROVIDER_OPENAI_COMPATIBLE "Build OpenAI-Compatible provider" ON)
+option(AI_SDK_COVERAGE "Instrument for Clang source-based coverage (see scripts/coverage.sh)" OFF)
+
+# The version the runtime reports (ai_sdk_version(), the MCP clientInfo block).
+# Sourced from the project version so it cannot drift from the release number
+# the manifests carry. See include/ai/version.hpp.
+add_compile_definitions(AI_SDK_VERSION="${PROJECT_VERSION}")
+
+# Coverage instrumentation. These flags only make the build *emit* .profraw
+# files; turning those into a report needs llvm-profdata + llvm-cov, which is
+# what scripts/coverage.sh drives. Clang-specific: the profile format is read
+# back by llvm-cov, which will not read GCC's gcov output.
+if(AI_SDK_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "AI_SDK_COVERAGE requires Clang (found ${CMAKE_CXX_COMPILER_ID}). "
+            "llvm-cov reads the profile Clang emits; GCC would need gcov instead.")
+    endif()
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+    # The profiling runtime has to be linked in too, or nothing writes a profile.
+    add_link_options(-fprofile-instr-generate)
+endif()
 
 # Expose provider enablement to the preprocessor so the CLI / C binding can
 # conditionally compile provider code (they include all providers by default).
