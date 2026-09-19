@@ -17,7 +17,7 @@ the defects that suite found are fixed — including six that blocked release.
   and `streamText` were already async and are unchanged.
 
 ### Added — Node binding
-- **Test suite** (`bindings/node/test/`): 60 cases over the public surface —
+- **Test suite** (`bindings/node/test/`): 61 cases over the public surface —
   every provider factory, tool-calling through each entry point, streaming
   events, sessions, memory, batch, MCP, standard toolkit, permissions, and
   tool-set merging. Hermetic: a mock provider server stands in for the vendor
@@ -88,7 +88,7 @@ the defects that suite found are fixed — including six that blocked release.
   binding's `version()` and `package.json` agree.
 
 ### Tests
-- 162 offline unit tests (`ctest`), plus the 60-case Node suite. Both run in CI
+- 162 offline unit tests (`ctest`), plus the 61-case Node suite. Both run in CI
   on every push; neither needs an API key or network access.
 - `scripts/coverage.sh` reports what those tests actually exercise (Clang
   source-based coverage). It covers the SDK but not the socket layer or the C

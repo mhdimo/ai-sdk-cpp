@@ -343,6 +343,14 @@ test('describeToolSet() reports what a set exposes, in name order', () => {
   assert.equal(readFile.inputSchema.type, 'object');
 });
 
+test('describeToolSet() throws on something that is not a tool set', () => {
+  // The assertion is only that it throws. Unwrapping a plain {} yields a null
+  // handle, so without the guard this is a segfault that takes the host process
+  // down rather than an exception the caller can catch -- and the message
+  // belongs to node-addon-api, not to us.
+  assert.throws(() => ai.describeToolSet({}));
+});
+
 test('describeToolSet() reads through a wrapped tool set', () => {
   // ToolSet has no public constructor, so the interesting case is a set the
   // public API derives rather than builds: if this only worked on a raw

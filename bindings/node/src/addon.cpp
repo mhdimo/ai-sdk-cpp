@@ -1201,6 +1201,13 @@ Napi::Value DescribeToolSet(const Napi::CallbackInfo& info) {
         return env.Undefined();
     }
     auto* wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(info[0].As<Napi::Object>());
+    // Unwrap hands back null for an object that was never wrapped -- a plain
+    // {} -- and it has already raised a JS exception by then. Returning without
+    // raising another is the whole fix: a second ThrowAsJavaScriptException
+    // lands on top of the pending one, napi_throw refuses it, and node-addon-api
+    // turns that refusal into a fatal error that takes the process down. Left
+    // unguarded the null would instead reach ->handle() as a null deref.
+    if (wrap == nullptr) return env.Undefined();
 
     ai_tool_set_description_t desc{};
     const ai_status_t status = ai_tool_set_describe_json(wrap->handle(), &desc);
