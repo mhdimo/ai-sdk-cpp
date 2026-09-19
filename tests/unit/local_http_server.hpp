@@ -15,10 +15,17 @@
 
 #include <boost/asio.hpp>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -45,8 +52,31 @@ public:
     }
 
     ~LocalHttpServer() {
-        // The serving thread is parked in accept() or read_some(); closing from
-        // here is what cancels that operation and lets the thread return.
+        // Closing the acceptor does not cancel a blocking accept(). POSIX leaves
+        // that unspecified, and Linux -- unlike BSD, where this harness was
+        // written -- does not wake the blocked thread: the syscall is holding a
+        // reference to the listening socket, so closing the descriptor never
+        // reaches it and join() below waits forever. macOS passing while both
+        // Linux jobs hung for the full ctest timeout was exactly this.
+        //
+        // Two blocking calls need waking, and neither is woken by a close():
+        //
+        //   accept(): a connection of our own. The kernel completes the
+        //   handshake into the backlog whether or not anyone is in accept(), so
+        //   this returns from accept() even if the serving thread had not got
+        //   there yet. It then sees `stopping_` and leaves rather than serving
+        //   the connection it just accepted.
+        //
+        //   read_some(): shutdown(), which makes the socket readable-at-EOF for
+        //   the reader. Today's tests never need this -- the model, and with it
+        //   the client's half of the connection, is destroyed before the server
+        //   -- but read_some() on a connection a client left open is unbounded,
+        //   and a test that forgot to close one would hang here the same way.
+        stopping_.store(true);
+        poke();
+        if (std::intptr_t fd = live_fd_.load(); fd >= 0) {
+            shutdown_socket(fd);
+        }
         try {
             acceptor_.close();
         } catch (const std::exception&) {
@@ -99,6 +129,27 @@ private:
         }
     }
 
+    /// Open a connection to ourselves, to give a blocked accept() something to
+    /// return. Best-effort: if it fails the acceptor is closed anyway, and an
+    /// accept() that has not already been reached will fail on its own.
+    void poke() {
+        boost::system::error_code ec;
+        boost::asio::ip::tcp::socket wake(ioc_);
+        wake.connect(boost::asio::ip::tcp::endpoint(
+                         boost::asio::ip::address_v4::loopback(), port_),
+                     ec);
+    }
+
+    /// Wake a thread blocked in read_some() on this descriptor. intptr_t rather
+    /// than int because a Windows SOCKET is 64-bit.
+    static void shutdown_socket(std::intptr_t fd) {
+#ifdef _WIN32
+        ::shutdown(static_cast<SOCKET>(fd), SD_BOTH);
+#else
+        ::shutdown(static_cast<int>(fd), SHUT_RDWR);
+#endif
+    }
+
     void serve() {
         using boost::asio::ip::tcp;
         boost::system::error_code ec;
@@ -108,6 +159,11 @@ private:
             if (ec) {
                 return;  // acceptor closed -> shutdown
             }
+            if (stopping_.load()) {
+                return;  // the wakeup connection from ~LocalHttpServer
+            }
+
+            live_fd_.store(static_cast<std::intptr_t>(sock.native_handle()));
 
             std::string pending;
             char chunk[4096];
@@ -165,6 +221,11 @@ private:
                     break;
                 }
             }
+
+            // Cleared here rather than by a scope guard so the descriptor is
+            // never published as shutdown-able after the socket behind it is
+            // gone.
+            live_fd_.store(-1);
         }
     }
 
@@ -173,6 +234,12 @@ private:
     boost::asio::io_context ioc_;
     boost::asio::ip::tcp::acceptor acceptor_;
     std::thread thread_;
+    /// Set by the destructor; the serving thread leaves as soon as it sees it.
+    std::atomic<bool> stopping_{false};
+    /// The descriptor of the connection being served, or -1. A bare descriptor
+    /// rather than the socket, so the destructor can shutdown() it without
+    /// touching an object the serving thread is blocked in.
+    std::atomic<std::intptr_t> live_fd_{-1};
     std::atomic<int> served_{0};
     // Written by the serving thread, read by the test thread.
     mutable std::mutex bodies_mutex_;
