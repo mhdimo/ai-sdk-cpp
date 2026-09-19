@@ -89,6 +89,15 @@ the defects that suite found are fixed — including six that blocked release.
   covered by the Node suite instead. The script says so in its output.
 
 ### Notes & known limitations
+- **Building requires GCC 13 or newer, or Clang.** GCC 11 and 12 miscompile the
+  library's coroutines: 30 of the 158 tests crash on them, at `-O0` and `-O3`
+  alike, while GCC 13 passes all 158 on the same OS, standard library and Boost.
+  A build that succeeded on those compilers would therefore still be a library
+  that segfaults, so the build now refuses them by name instead of letting that
+  through — `-DAI_SDK_ALLOW_UNSUPPORTED_COMPILER=ON` overrides it. This lands
+  hardest on Ubuntu 22.04, RHEL 9 and Debian 12, whose default repositories ship
+  GCC 11 or 12 and no newer one; Clang builds it fine on all three, and is the
+  route to take there.
 - **An ambient `ANTHROPIC_AUTH_TOKEN` outranks an explicitly passed `apiKey`.**
   The Anthropic provider advertises two credentials and prefers the Bearer
   token (`docs/providers.md`), resolving each independently, so if the
