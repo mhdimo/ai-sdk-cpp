@@ -131,6 +131,51 @@ async function run() {
       return { text: r.text, steps: r.steps };
     }
 
+    // How much the process grows while running tool calls.
+    //
+    // The binding has to report each tool result through a buffer, and the
+    // question this measures is whose memory that buffer is and when it is
+    // released. Reporting one that is allocated per call and freed by nobody
+    // leaks the full output of every call for the life of the process: nothing
+    // at all in a short run, and unbounded in the long-lived one this SDK is
+    // for. It shows up here and nowhere else, because every other test in this
+    // suite looks at values rather than at what was retained to produce them.
+    //
+    // Each iteration is a *separate* generateText call rather than one long
+    // agent loop, and that is what makes the measurement mean anything: a loop
+    // keeps every tool result in the conversation, which is real retained
+    // memory that grows with the same shape as the leak and would drown it.
+    // Ending each call discards the history, so anything still growing is
+    // growing in the binding.
+    case 'tool-result-memory': {
+      const bytes = Number(process.env.TOOL_RESULT_BYTES || 1 << 20);
+      const calls = Number(process.env.TOOL_RESULT_CALLS || 150);
+      const payload = 'x'.repeat(bytes);
+      const tool = ai.tool('get_weather', SCHEMA, 'Get the current weather for a city.', () => payload);
+
+      const ask = () =>
+        ai.generateText({
+          model: model('mock-tool-call'),
+          tools: [tool],
+          prompt: 'What is the weather in Paris?',
+          maxSteps: 3,
+        });
+
+      // One call before the baseline, so one-time work -- loading the addon's
+      // lazily-built pieces, the first allocation of the buffer -- is already
+      // in `before` rather than counted as growth.
+      const warm = await ask();
+      const before = process.memoryUsage().rss;
+
+      let steps = warm.steps;
+      for (let i = 0; i < calls; i++) {
+        steps += (await ask()).steps;
+      }
+
+      const after = process.memoryUsage().rss;
+      return { calls, bytes, steps, before, after, growth: after - before };
+    }
+
     case 'generateText-throwing-tool': {
       const r = await ai.generateText({
         model: model('mock-tool-call'),

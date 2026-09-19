@@ -71,7 +71,19 @@ void ai_model_destroy(ai_model_t model);
  * -------------------------------------------------------------------------- */
 
 typedef struct {
-    const char* output_json;   /* JSON string of the tool output */
+    /* JSON string of the tool output.
+     *
+     * Borrowed, not transferred. The library parses it into its own storage
+     * before ai_tool_fn returns and keeps no reference afterwards, so the
+     * callback owns this buffer and is free to reuse it -- a static or
+     * thread-local buffer is the intended shape, and a string literal is fine.
+     *
+     * It must stay valid until the callback has returned, which rules out a
+     * pointer into a local that has gone out of scope by then. Allocating a
+     * fresh buffer per call is also wrong, in a way that is invisible: nothing
+     * on either side of this contract frees it, so each call leaks the output
+     * for the life of the process. Both language bindings shipped that way. */
+    const char* output_json;
     int is_error;              /* 0 = success, 1 = error */
 } ai_tool_result_t;
 

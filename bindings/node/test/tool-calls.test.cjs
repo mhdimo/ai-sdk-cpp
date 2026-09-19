@@ -205,3 +205,41 @@ test('Session.sendStream reports a connection failure instead of an empty succes
     );
   }
 });
+
+// What the tool-result path retains, rather than what it returns.
+//
+// The failure this is for is invisible to every other test here: a binding that
+// allocates a buffer per tool call and frees none of them returns exactly the
+// right values and leaks the entire output of every call for the life of the
+// process. Nothing fails, nothing logs, and the process simply grows -- which
+// is why it is worth a test that measures memory instead of assertions.
+test('tool results do not accumulate in the process', async () => {
+  await mock.reset();
+  // A long budget on purpose: this runs 150 round trips through the mock, and
+  // the failure it looks for is a slow growth rather than a hang.
+  const r = await run('tool-result-memory', { timeoutMs: 180000 });
+
+  // First, that the loop did the work. A scenario that quietly stopped calling
+  // the tool would leak nothing and pass the assertion below for the wrong
+  // reason -- and the leak would go on being unmeasured.
+  assert.equal(
+    r.steps,
+    (r.calls + 1) * 2,
+    `expected every one of the ${r.calls} calls to run the tool and loop back`
+  );
+
+  // 150 calls of 1 MiB with a buffer per call is 150 MiB of growth. The fixed
+  // version reuses one buffer per thread, so it stays flat. The bar sits at a
+  // fifth of the leak: far above allocator and GC noise, so it reports the
+  // defect rather than the machine, and far below the defect, so it cannot be
+  // passed by accident.
+  const limit = (r.bytes * r.calls) / 5;
+  const mib = (n) => `${(n / 1048576).toFixed(1)} MiB`;
+  assert.ok(
+    r.growth < limit,
+    `RSS grew ${mib(r.growth)} over ${r.calls} tool calls of ${mib(r.bytes)} each ` +
+      `(limit ${mib(limit)}). The tool-result buffer is being allocated per call ` +
+      `and never freed; see the ownership note on ai_tool_result_t in ` +
+      `bindings/c/ai_sdk.h.`
+  );
+});

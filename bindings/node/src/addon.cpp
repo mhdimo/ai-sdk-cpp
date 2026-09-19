@@ -184,12 +184,27 @@ struct ToolCallPayload {
     std::string input;
 };
 
+// The C layer copies output_json into its own storage before the callback
+// returns and keeps no reference to it past that point (see the ownership note
+// on ai_tool_result_t in bindings/c/ai_sdk.h). So the buffer has to outlive the
+// return statement, and only that: a thread_local is exactly that lifetime,
+// where a local would be a dangling read and a fresh allocation per call leaks
+// one buffer per tool call for the life of the process.
+//
+// A long-running agent is the case that makes this worth stating -- the leak is
+// proportional to tool output, so a TUI session that runs for a day accumulates
+// every byte it ever produced, and nothing ever reports it.
+//
+// Reuse is safe because nothing can interleave between this returning and the C
+// layer copying: the copy is straight-line code in the same call frame with no
+// co_await in between, so a second tool call cannot reach this on the same
+// thread inside that window even when calls run concurrently.
+static thread_local std::string g_tool_result_buffer;
+
 static ai_tool_result_t make_tool_result(const std::string& output, bool is_error) {
     ai_tool_result_t res = {};
-    char* copy = new char[output.size() + 1];
-    std::copy(output.begin(), output.end(), copy);
-    copy[output.size()] = '\0';
-    res.output_json = copy;
+    g_tool_result_buffer = output;
+    res.output_json = g_tool_result_buffer.c_str();
     res.is_error = is_error ? 1 : 0;
     return res;
 }
