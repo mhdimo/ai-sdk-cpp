@@ -21,11 +21,14 @@ struct Stack {
     ai_model_t model = nullptr;
     ai_tool_set_t tools = nullptr;
 
-    Stack() {
+    /// `base_url` NULL keeps the provider's default host; a test that needs to
+    /// watch a call fail points it at an address with nothing behind it.
+    explicit Stack(const char* base_url = nullptr) {
         ctx = ai_context_create();
         if (!ctx) return;
         ai_provider_options_t popts{};
         popts.api_key = "test-key";
+        popts.base_url = base_url;
         provider = ai_provider_create(ctx, "anthropic", popts);
         if (!provider) return;
         model = ai_model_create(provider, "claude-sonnet-4-5");
@@ -50,6 +53,52 @@ struct Stack {
         aopts.user_data = nullptr;
         aopts.provider_options_json = provider_options_json;
         return ai_agent_create(aopts);
+    }
+};
+
+/// A base URL with nothing listening on it. Binding to port 0 and closing hands
+/// back a port the OS just proved was free, so the connect is refused at once
+/// rather than hanging until the request times out.
+std::string unreachable_base_url() {
+    boost::asio::io_context ioc;
+    const boost::asio::ip::tcp::acceptor acc(
+        ioc, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), 0));
+    return "http://127.0.0.1:" + std::to_string(acc.local_endpoint().port());
+}
+
+/// What a stream callback was handed, reduced to the questions that matter:
+/// was it told the turn failed, was it told the turn finished, and what did
+/// the failure say.
+struct StreamTally {
+    std::vector<ai_stream_event_type_t> types;
+    std::string error_text;
+
+    static void on_event(ai_stream_event_t event, void* user_data) {
+        auto* self = static_cast<StreamTally*>(user_data);
+        self->types.push_back(event.type);
+        if (event.type == AI_STREAM_ERROR && event.text) {
+            self->error_text = event.text;
+        }
+    }
+
+    bool saw(ai_stream_event_type_t type) const {
+        return std::find(types.begin(), types.end(), type) != types.end();
+    }
+
+    /// A turn that failed has to say so, and has to *end* on the failure: an
+    /// error followed by a finish would leave a consumer that stops at the
+    /// first terminal event believing the turn completed.
+    void check_reports_failure() const {
+        INFO("events emitted: " << types.size() << ", error text: " << error_text);
+        // REQUIRE, not CHECK: back() below needs an element, and the failure
+        // this is here to catch is a stream that emitted nothing at all. Left
+        // as a CHECK the test does not report that, it segfaults on the empty
+        // vector and takes the rest of the run with it.
+        REQUIRE_FALSE(types.empty());
+        CHECK(saw(AI_STREAM_ERROR));
+        CHECK_FALSE(saw(AI_STREAM_FINISH));
+        CHECK(types.back() == AI_STREAM_ERROR);
+        CHECK_FALSE(error_text.empty());
     }
 };
 
@@ -566,4 +615,62 @@ TEST_CASE("waiting on a slow model costs almost no CPU", "[c_binding][perf]") {
     INFO("wall " << wall_s << "s, cpu " << cpu_s << "s");
     REQUIRE(wall_s > 0.3);
     CHECK(cpu_s < wall_s / 2);
+}
+
+// Every streaming entry point has to report a failure that the stream itself
+// cannot see. A transport failure produces no response at all, so nothing
+// downstream can turn it into an event; if the entry point returns its error
+// status and emits nothing, the consumer is handed a stream that simply ended.
+//
+// That is what `ai_session_send_stream` did. The Node binding, whose fallback
+// exists to stop a consumer waiting forever, filled the gap with a *finish* —
+// so the caller got a turn that had succeeded and produced nothing: zero
+// tokens, empty finishReason, no error, and nothing to tell it apart from a
+// model that answered with silence.
+//
+// Only *this* entry point was wrong; the other two already emitted. They are
+// covered anyway, because the contract is what is being pinned here, and a
+// future edit to either of them should have to fail a test.
+TEST_CASE("a stream that cannot reach the provider reports the failure",
+          "[c_binding][stream]") {
+    const std::string url = unreachable_base_url();
+    Stack s(url.c_str());
+    REQUIRE(s.ctx);
+    REQUIRE(s.model);
+
+    SECTION("ai_stream_text") {
+        StreamTally tally;
+        ai_generate_options_t opts{};
+        opts.model = s.model;
+        opts.prompt = "hello";
+        opts.max_steps = 1;
+
+        CHECK(ai_stream_text(opts, &StreamTally::on_event, &tally) != AI_OK);
+        tally.check_reports_failure();
+    }
+
+    SECTION("ai_agent_call_stream") {
+        ai_agent_t agent = s.make_agent(nullptr);
+        REQUIRE(agent);
+
+        StreamTally tally;
+        CHECK(ai_agent_call_stream(agent, "hello", &StreamTally::on_event, &tally) != AI_OK);
+        tally.check_reports_failure();
+
+        ai_agent_destroy(agent);
+    }
+
+    SECTION("ai_session_send_stream") {
+        ai_agent_t agent = s.make_agent(nullptr);
+        REQUIRE(agent);
+        ai_session_t session = ai_session_create(agent);
+        REQUIRE(session);
+
+        StreamTally tally;
+        CHECK(ai_session_send_stream(session, "hello", &StreamTally::on_event, &tally) != AI_OK);
+        tally.check_reports_failure();
+
+        ai_session_destroy(session);
+        ai_agent_destroy(agent);
+    }
 }
