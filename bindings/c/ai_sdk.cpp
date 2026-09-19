@@ -253,6 +253,112 @@ private:
     char buf_[AI_REASON_MAX];
 };
 
+// The three coroutine bodies below live here, outside `extern "C"`, rather than
+// as lambdas at their points of use -- and the coroutine is the whole reason.
+//
+// GCC 11 and 12 emit the `operator()` of a coroutine lambda declared inside a
+// function with C language linkage twice, and the assembler rejects the
+// duplicate symbol ("symbol ... is already defined"). GCC 13 emits it once, and
+// Clang never had the problem, which is why this went unnoticed: CI builds with
+// GCC 13, while GCC 11 is the default on Ubuntu 22.04 and RHEL 9 and GCC 12 on
+// Debian 12 -- so on all of those the file did not build at all. The error
+// lands at the assembly step, after everything else has compiled, so it reads
+// like a linker or build-system fault rather than a source one.
+//
+// Hoisting is the entire fix. Language linkage is a property of the enclosing
+// function, not of the C++ types its body happens to mention, and none of this
+// is part of the C ABI -- so moving the coroutines out changes nothing except
+// which compiler can parse them. The fourth coroutine in this file, the
+// streaming consumer inside `drive_stream`, is a lambda too but sits above the
+// block already; it has always built.
+
+/// The body of a tool implemented by a C callback.
+struct ToolCallbackBody {
+    ai_tool_set::ToolBinding* binding;
+    std::string tool_name;
+
+    ai::Task<json::value> operator()(json::value input, ai::ToolExecutionContext) const {
+        std::string input_str = json::serialize(input);
+        auto result = binding->callback(tool_name.c_str(), input_str.c_str(), binding->user_data);
+
+        json::value output;
+        if (result.output_json) {
+            boost::system::error_code ec;
+            output = json::parse(result.output_json, ec);
+            if (ec) output = json::value(result.output_json);
+        }
+
+        if (result.is_error) {
+            throw std::runtime_error(result.output_json ? result.output_json : "Tool error");
+        }
+
+        co_return output;
+    }
+};
+
+/// The summarizer behind the opt-in auto-checkpoint.
+struct CheckpointSummarizer {
+    ai::LanguageModelPtr model;
+
+    ai::Task<std::string> operator()(const ai::Prompt& history) const {
+        ai::GenerateTextOptions o;
+        o.model = model;
+        o.system = "Summarize the conversation so far into a concise checkpoint: "
+                   "key decisions, current state, and next steps.";
+        std::string transcript;
+        for (auto& m : history) {
+            std::visit([&](auto&& msg) {
+                using T = std::decay_t<decltype(msg)>;
+                if constexpr (std::is_same_v<T, ai::UserMessage>) {
+                    for (auto& p : msg.content)
+                        if (auto* t = std::get_if<ai::TextPart>(&p)) transcript += "User: " + t->text + "\n";
+                } else if constexpr (std::is_same_v<T, ai::AssistantMessage>) {
+                    for (auto& p : msg.content)
+                        if (auto* t = std::get_if<ai::TextPart>(&p)) transcript += "Assistant: " + t->text + "\n";
+                }
+            }, m);
+        }
+        o.prompt = transcript;
+        auto r = co_await ai::generate_text(std::move(o));
+        co_return r.text;
+    }
+};
+
+/// The bridge from the C approver callback to `ai::Approver`.
+struct ApproverBody {
+    ai_approver_fn approver;
+    void* user_data;
+
+    ai::Task<ai::Approval> operator()(const std::string& tool,
+                                      const boost::json::value& input,
+                                      const std::string& rationale) const {
+        std::string input_str = boost::json::serialize(input);
+        ReasonBuffer reason;
+        int d = approver(tool.c_str(), input_str.c_str(), rationale.c_str(),
+                         reason.data(), user_data);
+        // Fail closed: a verdict that is not one of the three is a bug in
+        // the caller, and running the tool anyway is the one reading that
+        // turns it into a security hole.
+        ai::Approval approval{};
+        // Left empty when the approver said nothing, which lets the
+        // policy's reason survive -- see the header.
+        approval.reason = reason.str();
+        switch (d) {
+        case AI_PERMISSION_ALLOW:
+            approval.decision = ai::PermissionDecision::Allow;
+            break;
+        case AI_PERMISSION_ALLOW_ALWAYS:
+            approval.decision = ai::PermissionDecision::Allow;
+            approval.always_allow = true;
+            break;
+        default:  // AI_PERMISSION_DENY, AI_PERMISSION_ASK, out of contract
+            approval.decision = ai::PermissionDecision::Deny;
+            break;
+        }
+        co_return approval;
+    }
+};
+
 } // namespace
 
 extern "C" {
@@ -414,23 +520,7 @@ ai_status_t ai_tool_set_add(
         tool_name,
         schema,
         description ? std::string(description) : "",
-        [binding, tool_name](json::value input, ai::ToolExecutionContext) -> ai::Task<json::value> {
-            std::string input_str = json::serialize(input);
-            auto result = binding->callback(tool_name.c_str(), input_str.c_str(), binding->user_data);
-
-            json::value output;
-            if (result.output_json) {
-                boost::system::error_code ec;
-                output = json::parse(result.output_json, ec);
-                if (ec) output = json::value(result.output_json);
-            }
-
-            if (result.is_error) {
-                throw std::runtime_error(result.output_json ? result.output_json : "Tool error");
-            }
-
-            co_return output;
-        }
+        ToolCallbackBody{binding, tool_name}
     ));
 
     return AI_OK;
@@ -798,30 +888,9 @@ ai_session_t ai_session_create_with_memory(ai_agent_t agent, const char* memory_
     // Opt-in via `enable_checkpoint` — callers that don't want the extra API
     // call (e.g. DeepSeek Code) can pass 0.
     if (enable_checkpoint && agent->agent.model()) {
-        auto summarizer = [model = agent->agent.model()](const ai::Prompt& history) -> ai::Task<std::string> {
-            ai::GenerateTextOptions o;
-            o.model = model;
-            o.system = "Summarize the conversation so far into a concise checkpoint: "
-                       "key decisions, current state, and next steps.";
-            std::string transcript;
-            for (auto& m : history) {
-                std::visit([&](auto&& msg) {
-                    using T = std::decay_t<decltype(msg)>;
-                    if constexpr (std::is_same_v<T, ai::UserMessage>) {
-                        for (auto& p : msg.content)
-                            if (auto* t = std::get_if<ai::TextPart>(&p)) transcript += "User: " + t->text + "\n";
-                    } else if constexpr (std::is_same_v<T, ai::AssistantMessage>) {
-                        for (auto& p : msg.content)
-                            if (auto* t = std::get_if<ai::TextPart>(&p)) transcript += "Assistant: " + t->text + "\n";
-                    }
-                }, m);
-            }
-            o.prompt = transcript;
-            auto r = co_await ai::generate_text(std::move(o));
-            co_return r.text;
-        };
         session.set_on_turn_finish(
-            ai::memory::make_checkpoint_writer(store, summarizer, 5));
+            ai::memory::make_checkpoint_writer(
+                store, CheckpointSummarizer{agent->agent.model()}, 5));
     }
 
     return new ai_session{ .session = std::move(session), .ctx = agent->ctx };
@@ -1067,34 +1136,7 @@ ai_tool_set_t ai_with_permissions_approver(ai_tool_set_t tools, ai_permission_po
     // behaviour of ai_with_permissions.
     ai::Approver a;
     if (approver) {
-        a = [approver, approver_user_data](const std::string& tool,
-                                           const boost::json::value& input,
-                                           const std::string& rationale) -> ai::Task<ai::Approval> {
-            std::string input_str = boost::json::serialize(input);
-            ReasonBuffer reason;
-            int d = approver(tool.c_str(), input_str.c_str(), rationale.c_str(),
-                             reason.data(), approver_user_data);
-            // Fail closed: a verdict that is not one of the three is a bug in
-            // the caller, and running the tool anyway is the one reading that
-            // turns it into a security hole.
-            ai::Approval approval{};
-            // Left empty when the approver said nothing, which lets the
-            // policy's reason survive -- see the header.
-            approval.reason = reason.str();
-            switch (d) {
-            case AI_PERMISSION_ALLOW:
-                approval.decision = ai::PermissionDecision::Allow;
-                break;
-            case AI_PERMISSION_ALLOW_ALWAYS:
-                approval.decision = ai::PermissionDecision::Allow;
-                approval.always_allow = true;
-                break;
-            default:  // AI_PERMISSION_DENY, AI_PERMISSION_ASK, out of contract
-                approval.decision = ai::PermissionDecision::Deny;
-                break;
-            }
-            co_return approval;
-        };
+        a = ApproverBody{approver, approver_user_data};
     }
 
     out->tools = ai::with_permissions(std::move(tools->tools), p, std::move(a));
