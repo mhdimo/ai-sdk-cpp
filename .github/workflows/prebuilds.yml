@@ -32,13 +32,42 @@ jobs:
           # covers Ubuntu 22.04, Debian 12 and anything later. Moving either
           # Linux job to a newer image silently narrows that -- keep them
           # matched, or knowingly accept the difference.
+          #
+          # The image is on a clock. GitHub put ubuntu-22.04 into deprecation on
+          # 2026-09-17, with brownout windows in March and April 2027 and full
+          # retirement on 2027-04-17. It still runs today, so 1.0.0 is not
+          # affected -- but the deadline is real and the obvious migration is
+          # the wrong one: ubuntu-24.04 raises the floor to glibc 2.39 and drops
+          # every Ubuntu 22.04 and Debian 12 user, who then have no prebuild and
+          # no source fallback, so `npm install` fails outright for them.
+          #
+          # The fix that keeps both is to run the build inside an
+          # `ubuntu:22.04` container on a newer runner, which decouples the
+          # runner label from the glibc the artifact records. That is the shape
+          # `scripts/` verification for this release used, so it is known to
+          # work: the container builds, links and loads the prebuild, and
+          # reports GLIBC_2.35. Do that before April 2027 rather than reacting
+          # to a brownout.
           - runner: ubuntu-22.04
             target: linux-x64
           - runner: ubuntu-22.04-arm
             target: linux-arm64
-          # macos-13 is the last Intel image; 14 and later are Apple Silicon.
-          # Two runners, because one prebuild cannot serve both architectures.
-          - runner: macos-13
+          # macos-15-intel is the last Intel image GitHub will publish; 14 and
+          # later are Apple Silicon. Two runners, because one prebuild cannot
+          # serve both architectures.
+          #
+          # This was macos-13, which GitHub retired on 2025-12-04 -- a job on a
+          # retired label does not build and fail, it dies with "The
+          # configuration 'macos-13-us-default' is not supported", so the leg
+          # never runs. With `assemble` behind `needs: prebuild` and no `if:`,
+          # one dead label means no tarball at all.
+          #
+          # Intel runners have an endpoint: GitHub stops publishing them when
+          # the macOS 15 image retires, currently slated for late 2027. The
+          # darwin-x64 prebuild disappears then unless it is cross-compiled
+          # from Apple Silicon, which needs an x86_64 OpenSSL to link against.
+          # Worth knowing a year out rather than discovering it on a tag.
+          - runner: macos-15-intel
             target: darwin-x64
           - runner: macos-14
             target: darwin-arm64
@@ -81,7 +110,22 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install boost openssl cmake ninja
-          echo "OpenSSL_DIR=$(brew --prefix openssl)/lib/cmake/OpenSSL" >> "$GITHUB_ENV"
+
+          # OPENSSL_ROOT_DIR, not OpenSSL_DIR. The project calls
+          # find_package(OpenSSL REQUIRED), which resolves through CMake's
+          # FindOpenSSL.cmake -- module mode -- and that reads OPENSSL_ROOT_DIR.
+          # OpenSSL_DIR is the hint for *config* mode (the directory holding
+          # OpenSSLConfig.cmake) and FindOpenSSL does not consult it, so setting
+          # it looks right and does nothing.
+          #
+          # It also cannot be caught locally, which is why this is worth the
+          # comment: on a developer's Mac, Homebrew is already on the default
+          # search path, so configure succeeds whatever this step says. CI is
+          # the only place Homebrew's OpenSSL is keg-only and genuinely hidden
+          # -- and there the failure is "Could NOT find OpenSSL" on both macOS
+          # legs, which skips `assemble` in turn, so the release produces no
+          # tarball at all rather than a broken one.
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v4
         with:

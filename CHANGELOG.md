@@ -130,6 +130,23 @@ the defects that suite found are fixed — including six that blocked release.
   *published* artifact rather than a working directory. The README's examples
   are not illustrative — every call in it was run against the binding, and the
   event-type list it documents was checked against what the stream emits.
+- **The prebuild matrix would not have produced a tarball.** Two independent
+  faults, neither visible from a developer machine, both fatal to the release.
+  The `darwin-x64` leg was pinned to `macos-13`, which GitHub retired on
+  2025-12-04 — a job on a retired label does not fail to build, it dies before
+  starting. And the macOS dependency step exported `OpenSSL_DIR`, which is the
+  hint for CMake's *config* mode; the project resolves OpenSSL through
+  `FindOpenSSL.cmake`, which reads `OPENSSL_ROOT_DIR` and ignores the other. On
+  a Mac with Homebrew already on the default search path neither was
+  observable, because configure succeeds whatever the variable says. Since
+  `assemble` sits behind `needs: prebuild` with no `if:`, one dead leg skips it
+  and `npm pack` never runs — so the failure mode was not a broken package but
+  no package. Both are fixed and the runner labels verified against GitHub's
+  current lists. Separately noted: `ubuntu-22.04`, which the Linux legs use for
+  its glibc 2.35 floor, entered deprecation on 2026-09-17 and retires
+  2027-04-17; the migration must keep that floor, which means building inside a
+  22.04 container on a newer runner rather than moving to `ubuntu-24.04` and
+  raising it to 2.39.
 
 ### Changed
 - **Parallel tool execution**: `execute_tools` (generate + stream paths)
