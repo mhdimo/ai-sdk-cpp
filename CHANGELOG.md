@@ -17,7 +17,7 @@ the defects that suite found are fixed — including six that blocked release.
   and `streamText` were already async and are unchanged.
 
 ### Added — Node binding
-- **Test suite** (`bindings/node/test/`): 63 cases over the public surface —
+- **Test suite** (`bindings/node/test/`): 64 cases over the public surface —
   every provider factory, tool-calling through each entry point, streaming
   events, sessions, memory, batch, MCP, standard toolkit, permissions, and
   tool-set merging. Hermetic: a mock provider server stands in for the vendor
@@ -41,6 +41,39 @@ the defects that suite found are fixed — including six that blocked release.
 - Provider options can be passed through to agents from C and Node.
 
 ### Fixed
+- **Every tool call leaked its output, in both language bindings.** The C API
+  documented no ownership for `ai_tool_result_t.output_json`, and the two
+  bindings each guessed wrong the same way: Python and Node both allocated a
+  fresh buffer per call with `new char[]`, and nothing on either side of the
+  call freed it. Measured at 155 MiB of RSS after 150 tool calls of 1 MiB — a
+  leak proportional to what the tools return, in a loop the SDK exists to run
+  for days, and invisible to every test that checks values rather than memory.
+  The buffer is now a `thread_local` string per binding, reused by the next
+  call on that thread and released when the thread exits, and the ownership
+  rule — borrowed, valid until the callback returns — is written on the type
+  in `bindings/c/ai_sdk.h`. A regression test drives 150 tool calls in a
+  separate process and fails on RSS growth; run against the old code it reports
+  the full 155 MiB, so it is measuring the leak and not the machine.
+- **The shipped Linux library was going to need a newer libstdc++ than Ubuntu
+  22.04 has.** The option that links the C++ runtime into `libai_sdk.so`
+  statically is on by default for GNU, but its guard tested `CXX_COMPILER_ID`
+  instead of `CMAKE_CXX_COMPILER_ID` — not a CMake variable at all, so the
+  comparison was false on every compiler and the flags were never applied. The
+  build reported the option as enabled while producing a library that depended
+  on the runtime of the machine that built it. Since the prebuild is built by
+  GCC 13 and Ubuntu 22.04 ships an older libstdc++, this failed at `require()`
+  on exactly the systems the 22.04 matrix entries exist to serve. The guard is
+  fixed, and the warning it produced ("the compiler is GNU, not GNU") was the
+  only sign anything was wrong.
+- **A prebuild recorded an empty rpath entry.** `binding.gyp` supplied the
+  loader-relative rpath twice, once per-OS and once through a shared variable.
+  The shared one reached the Makefile unquoted, so the shell read `$O` as an
+  unset variable and expanded it to nothing; the linker recorded the result as
+  an empty element. An empty rpath element is not ignored — it means the
+  current working directory, so the loader would also have taken `libai_sdk.so`
+  from wherever the process happened to be running. Both entries looked
+  identical in the Makefile and only one survived; the duplicate is gone, and
+  the prebuild now records exactly one rpath, asserted by value after the link.
 - **A failed `Session.sendStream()` turn reported success.** When the request
   never got a response — refused connection, DNS failure, timeout — the
   session entry point returned its error status without emitting a terminal

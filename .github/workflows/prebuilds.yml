@@ -49,7 +49,33 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libboost-all-dev libssl-dev cmake ninja-build
+
+          # GCC 13, not the image's g++-11. The build refuses anything older by
+          # name, because GCC 11 and 12 miscompile this project's coroutines
+          # into a library that segfaults -- so this is a requirement, not a
+          # preference for a newer compiler.
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y g++-13 libssl-dev cmake ninja-build curl
+          echo "CC=gcc-13" >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+
+          # Boost 1.82 or newer, which 22.04 does not carry: its repositories
+          # stop at 1.74 and the build needs 1.82. The headers are the entire
+          # requirement -- the project links Boost::headers and nothing else, so
+          # Boost is never compiled, and unpacking the release tarball takes a
+          # minute where building it from source would take ten.
+          #
+          # Not solved by moving to a 24.04 image, which has Boost 1.83: the
+          # image also sets the glibc floor, and 24.04 would raise it to 2.39
+          # and cut off the distributions the 22.04 matrix entries exist to
+          # serve. See the note on the matrix above.
+          curl -fsSL -o /tmp/boost.tar.gz \
+            https://archives.boost.io/release/1.83.0/source/boost_1_83_0.tar.gz
+          sudo mkdir -p /opt/boost
+          sudo tar xzf /tmp/boost.tar.gz -C /opt/boost --strip-components=1
+          echo "BOOST_ROOT=/opt/boost" >> "$GITHUB_ENV"
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'

@@ -62,6 +62,27 @@ option(AI_SDK_COVERAGE "Instrument for Clang source-based coverage (see scripts/
 # because the thing it permits is a library that crashes; see the comment there.
 option(AI_SDK_ALLOW_UNSUPPORTED_COMPILER "Build on a compiler measured to produce a broken library (GCC < 13)" OFF)
 
+# Whether the shared C binding carries its own copy of the C++ runtime.
+#
+# This is the artifact that ships, and on Linux it has to start on distributions
+# older than the one that built it. libstdc++ versions its symbols, so the usual
+# shape -- a build image years ahead of the target -- produces a library that
+# refuses to load, on the user's machine, which is the one place the check
+# cannot run. Linking the runtime in removes the dependency: the result needs
+# only libc, libm and the ELF loader.
+#
+# Default on for GNU, and off otherwise for a reason rather than by omission.
+# This project configures Clang on Linux with -stdlib=libc++, and there is no
+# -static-libc++ to match -static-libstdc++; defaulting it on there would give
+# an option that reports itself enabled while doing nothing at all, which is the
+# exact class of defect it exists to prevent. Turn it on with Clang and the
+# build says so instead.
+if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    option(AI_SDK_STATIC_CXX_RUNTIME "Link the C++ runtime into the shared C binding" ON)
+else()
+    option(AI_SDK_STATIC_CXX_RUNTIME "Link the C++ runtime into the shared C binding" OFF)
+endif()
+
 # The version the runtime reports (ai_sdk_version(), the MCP clientInfo block).
 # Sourced from the project version so it cannot drift from the release number
 # the manifests carry. See include/ai/version.hpp.

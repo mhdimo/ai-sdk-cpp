@@ -21,6 +21,26 @@ set_target_properties(ai-sdk-c PROPERTIES
     PUBLIC_HEADER ai_sdk.h
 )
 
+# See AI_SDK_STATIC_CXX_RUNTIME in the root CMakeLists for why. Kept here rather
+# than as a global linker flag so it applies to this one target: the tests and
+# the CLI link the same code and have no reason to carry a second copy of the
+# runtime.
+if(AI_SDK_STATIC_CXX_RUNTIME)
+    # CMAKE_CXX_COMPILER_ID, spelled in full. The bare name is not a CMake
+    # variable at all, so it is the empty string, the comparison is false on
+    # every compiler, and this silently takes the branch below -- leaving the
+    # runtime dynamically linked while the build reports the option as ON.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_link_options(ai-sdk-c PRIVATE -static-libstdc++ -static-libgcc)
+    else()
+        message(WARNING
+            "AI_SDK_STATIC_CXX_RUNTIME is ON but the compiler is "
+            "${CMAKE_CXX_COMPILER_ID}, not GNU, so -static-libstdc++ has nothing "
+            "to act on and will be skipped. The shared library will depend on "
+            "the runtime installed on the machine that loads it.")
+    endif()
+endif()
+
 install(TARGETS ai-sdk-c
     EXPORT AiSdkTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
