@@ -119,6 +119,17 @@ the defects that suite found are fixed — including six that blocked release.
 - **Checkpoint writer never fired for streamed turns**: `send_stream` did not
   increment the session turn counter.
 - **Use-after-free on GC** in the Node tool callback path (`SIGTRAP`).
+- **The npm tarball carried no licence text and no README.** `license: "MIT"`
+  was set in `package.json`, but the MIT text lives at the repository root and
+  npm only auto-includes it from the package root — so the published artifact
+  shipped the label without the notice it refers to, which is the part MIT
+  actually requires. The package also rendered on the registry with no readme
+  at all, because there was none in `bindings/node/`. Both files are now in the
+  package, along with `repository`, `homepage`, `bugs` and `keywords`, which
+  were absent for the same reason: nobody had looked at the manifest as a
+  *published* artifact rather than a working directory. The README's examples
+  are not illustrative — every call in it was run against the binding, and the
+  event-type list it documents was checked against what the stream emits.
 
 ### Changed
 - **Parallel tool execution**: `execute_tools` (generate + stream paths)

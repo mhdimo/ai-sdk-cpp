@@ -30,5 +30,23 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mhdimo/ai-sdk-cpp.git",
+    "directory": "bindings/node"
+  },
+  "homepage": "https://github.com/mhdimo/ai-sdk-cpp#readme",
+  "bugs": {
+    "url": "https://github.com/mhdimo/ai-sdk-cpp/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "agent",
+    "anthropic",
+    "openai",
+    "tool-calling",
+    "napi"
+  ],
   "license": "MIT"
 }
