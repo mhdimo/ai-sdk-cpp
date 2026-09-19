@@ -94,6 +94,33 @@ async function run() {
       return { events: types };
     }
 
+    // The same turn, but the provider rejects at request time. A 401 lands
+    // before the first stream part, which is the case the session entry point
+    // handles differently from streamText. It has to arrive as a terminal
+    // error event; anything else means the caller is told the turn succeeded.
+    //
+    // SESSION_NO_TOOLS drops the tool set. The two shapes take different routes
+    // through the C entry point -- with tools the failure surfaces from inside
+    // the stream, without them it reaches the outer catch -- so a test that
+    // only ever uses tools cannot see the second one.
+    case 'session-stream-error': {
+      const useTools = process.env.SESSION_NO_TOOLS !== '1';
+      const agent = new ai.Agent({
+        model: model(process.env.MOCK_ERROR_MODEL || 'mock-401'),
+        tools: useTools ? [getWeather()] : [],
+        instructions: useTools ? 'Use the tool.' : 'Answer directly.',
+        maxSteps: 3,
+      });
+      const session = new ai.Session(agent);
+      const types = [];
+      let errorText = null;
+      for await (const ev of session.sendStream('What is the weather in Paris?')) {
+        types.push(ev.type);
+        if (ev.type === 'error') errorText = ev.text;
+      }
+      return { events: types, errorText };
+    }
+
     case 'generateText-async-tool': {
       const r = await ai.generateText({
         model: model('mock-tool-call'),

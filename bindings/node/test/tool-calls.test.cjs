@@ -7,6 +7,7 @@
 // from outside.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const net = require('node:net');
 const { startMock, runScenario } = require('./helpers/harness.cjs');
 
 let mock;
@@ -18,6 +19,21 @@ test.after(() => mock && mock.stop());
 /** Run one scenario in a child process, under a wall-clock budget. */
 const run = (scenario, opts = {}) =>
   runScenario(scenario, { env: { MOCK_BASE_URL: mock.baseUrl }, ...opts });
+
+/**
+ * A port with nothing listening on it. Binding to 0 and immediately closing
+ * hands back a port the kernel just proved was free, so connecting to it is
+ * refused at once instead of hanging on a firewall.
+ */
+const deadPort = () =>
+  new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
 
 test('generateText runs a tool call and loops back to the model', async () => {
   await mock.reset();
@@ -105,4 +121,87 @@ test('Session.sendStream runs a tool call', async () => {
 
   const reqs = await mock.requests();
   assert.equal(reqs.length, 2, 'expected the streamed tool result to be sent back to the model');
+});
+
+// The counterpart to the tool-call case above: the provider rejects the request
+// itself. Unlike streamText, which has always surfaced this as an error event,
+// the session entry point returned the failure status without emitting
+// anything, and the binding then synthesized a *finish* event for the missing
+// terminal event. The caller saw an empty turn that had succeeded — the one
+// outcome a consumer cannot detect, because checking for an error is exactly
+// what finds nothing.
+test('Session.sendStream surfaces a request failure as an error event', async () => {
+  for (const [name, status] of [
+    ['mock-401', '401'],
+    ['mock-429', '429'],
+    ['mock-500', '500'],
+  ]) {
+    await mock.reset();
+    // `run` spreads opts after its own default env, so the whole env has to be
+    // passed here -- a partial one would drop MOCK_BASE_URL.
+    const r = await run('session-stream-error', {
+      env: { MOCK_BASE_URL: mock.baseUrl, MOCK_ERROR_MODEL: name },
+    });
+
+    assert.ok(
+      r.events.includes('error'),
+      `${name}: expected an error event, got: ${r.events.join(', ') || '(none)'}`
+    );
+    assert.match(
+      String(r.errorText),
+      new RegExp(status),
+      `${name}: the error event should name the status, not be a placeholder`
+    );
+    assert.equal(
+      r.events.at(-1),
+      'error',
+      `${name}: the error has to terminate the stream, or the caller keeps waiting`
+    );
+    assert.ok(
+      !r.events.includes('finish'),
+      `${name}: a failed turn must not also report a clean finish`
+    );
+  }
+});
+
+// The transport case, which the status-code cases above structurally cannot
+// reach: the request never gets a response at all. That covers a refused
+// connection, DNS failure, TLS failure and timeouts — the failures a machine
+// on a flaky network actually sees. Nothing in the stream ever errors, so the
+// failure has to be reported by the call itself, and before this was fixed the
+// caller got a `finish` carrying zero tokens and an empty finishReason: a
+// successful-looking empty turn, which is the one outcome a consumer cannot
+// detect, because looking for the error is exactly what finds nothing.
+test('Session.sendStream reports a connection failure instead of an empty success', async () => {
+  const port = await deadPort();
+  await mock.reset();
+
+  // Both agent shapes, because they take different routes through the C entry
+  // point: with tools the failure surfaces from inside the stream, without them
+  // it lands in the outer catch. A tool set is the *less* common shape for a
+  // plain chat session, so covering only the tool-bearing case misses the bug.
+  for (const noTools of ['1', '0']) {
+    const what = noTools === '1' ? 'without tools' : 'with tools';
+    const r = await run('session-stream-error', {
+      env: { MOCK_BASE_URL: `http://127.0.0.1:${port}`, SESSION_NO_TOOLS: noTools },
+    });
+
+    assert.ok(
+      r.events.includes('error'),
+      `${what}: expected an error event, got: ${r.events.join(', ') || '(none)'}`
+    );
+    assert.equal(
+      r.events.at(-1),
+      'error',
+      `${what}: the error has to terminate the stream, or the caller keeps waiting`
+    );
+    assert.ok(
+      !r.events.includes('finish'),
+      `${what}: a turn whose request never reached the provider must not report a clean finish`
+    );
+    assert.ok(
+      r.errorText && r.errorText.length > 0,
+      `${what}: the error event needs a message, not a placeholder: ${JSON.stringify(r.errorText)}`
+    );
+  }
 });

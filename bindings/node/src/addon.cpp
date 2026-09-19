@@ -577,19 +577,27 @@ static ai_stream_callback_fn stream_callback = [](ai_stream_event_t event, void*
 };
 
 // Run a blocking C stream call on a worker thread; return immediately. `cCall`
-// is invoked as cCall(StreamSession* s, ai_stream_callback_fn cb) and must drive
-// the stream to completion. After it returns, the TSFN is released.
+// is invoked as cCall(StreamSession* s, ai_stream_callback_fn cb), must drive
+// the stream to completion, and returns the call's status. After it returns,
+// the TSFN is released.
 template <typename F>
 static void RunStreamAsync(Napi::Env env, Napi::Function callback, F cCall) {
     auto* s = new StreamSession();
     s->tsfn = Napi::ThreadSafeFunction::New(env, callback, "ai-stream", 0, 1);
     std::thread([s, cCall = std::move(cCall)]() mutable {
-        cCall(s, stream_callback);
+        ai_status_t status = cCall(s, stream_callback);
         if (!s->terminal) {
-            // The C call returned without a finish/error event (e.g. it failed
-            // before streaming) — synthesize one so the JS consumer terminates.
+            // The call ended without a finish or error event. That only happens
+            // when it bailed out early, so the turn failed — and emitting a
+            // finish here would tell the caller a turn succeeded when no answer
+            // was ever produced. Fail closed.
             ai_stream_event_t ev = {};
-            ev.type = AI_STREAM_FINISH;
+            if (status == AI_OK) {
+                ev.type = AI_STREAM_FINISH;
+            } else {
+                ev.type = AI_STREAM_ERROR;
+                ev.text = ai_status_message(status);
+            }
             emit_stream_event(*s, ev);
         }
         s->tsfn.Release();
@@ -731,7 +739,7 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
             opts.system = system_str.empty() ? nullptr : system_str.c_str();
             opts.messages_json = messages_str.empty() ? nullptr : messages_str.c_str();
             opts.provider_options_json = provider_options_str.empty() ? nullptr : provider_options_str.c_str();
-            ai_stream_text(opts, cb, s);
+            return ai_stream_text(opts, cb, s);
         });
 
     return env.Undefined();
@@ -853,7 +861,7 @@ Napi::Value SessionWrapper::SendStream(const Napi::CallbackInfo& info) {
 
     RunStreamAsync(env, callback,
         [session, prompt](StreamSession* s, ai_stream_callback_fn cb) {
-            ai_session_send_stream(session, prompt.c_str(), cb, s);
+            return ai_session_send_stream(session, prompt.c_str(), cb, s);
         });
 
     return env.Undefined();

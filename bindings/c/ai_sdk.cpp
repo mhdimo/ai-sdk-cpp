@@ -1116,6 +1116,14 @@ ai_status_t ai_session_send_stream(
 
         return AI_OK;
     } catch (const std::exception& e) {
+        // The turn failed before it could finish: a refused connection, a DNS
+        // failure, a request that timed out. The caller has to be told, because
+        // the alternative is a stream that simply ends -- which reads as a turn
+        // that produced nothing rather than one that never happened.
+        ai_stream_event_t err_event{};
+        err_event.type = AI_STREAM_ERROR;
+        err_event.text = e.what();
+        callback(err_event, user_data);
         return map_exception(ctx, e);
     }
 }
