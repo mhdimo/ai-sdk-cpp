@@ -122,6 +122,14 @@ the defects that suite found are fixed — including six that blocked release.
 - **Streaming reports failures as a terminal `error` event, not a throw.**
   `streamText`/`sendStream` yield `{ type: 'error' }` and end; they do not
   reject. Callers must check for it.
+- **Node: passing the wrong kind of object to an entry point can abort the
+  process instead of throwing.** Eighteen call sites across five wrapper types
+  (context, provider, model, tool set, agent) unwrap their arguments without
+  checking that the unwrap succeeded, so `withPermissions({}, policy)` or the
+  like reaches a null handle and dies rather than raising a catchable error.
+  `describeToolSet()` is guarded; the rest are unchanged as of this release,
+  and guarding them is a candidate for 1.0.1 — mechanical, but wide enough that
+  it did not belong in a release that is otherwise done.
 - **Google** compiles and is wired through `createGoogle` (including
   `baseUrl`), but has not been exercised against the live API — treat it as
   experimental.
