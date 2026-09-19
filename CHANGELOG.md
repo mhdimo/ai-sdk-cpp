@@ -17,7 +17,7 @@ the defects that suite found are fixed — including six that blocked release.
   and `streamText` were already async and are unchanged.
 
 ### Added — Node binding
-- **Test suite** (`bindings/node/test/`): 61 cases over the public surface —
+- **Test suite** (`bindings/node/test/`): 63 cases over the public surface —
   every provider factory, tool-calling through each entry point, streaming
   events, sessions, memory, batch, MCP, standard toolkit, permissions, and
   tool-set merging. Hermetic: a mock provider server stands in for the vendor
@@ -41,6 +41,19 @@ the defects that suite found are fixed — including six that blocked release.
 - Provider options can be passed through to agents from C and Node.
 
 ### Fixed
+- **A failed `Session.sendStream()` turn reported success.** When the request
+  never got a response — refused connection, DNS failure, timeout — the
+  session entry point returned its error status without emitting a terminal
+  event, and the binding, whose fallback exists to stop a consumer waiting
+  forever, filled the gap with a *finish*. The caller got a turn that had
+  succeeded and produced nothing: zero tokens, empty `finishReason`, no error.
+  The status-code failures (401/429/500) were never affected — those arrive as
+  a response and were already surfaced from inside the stream — and neither was
+  an agent carrying tools, which routes the same failure through the stream.
+  It took a tool-less agent plus a server that never answered to reach it.
+  `ai_stream_text` has always emitted `AI_STREAM_ERROR` from its catch; the
+  session entry point now does too, and the binding's fallback fails closed
+  rather than reporting a finish it never received.
 - **`streamText` silently dropped tool calls.** It called the model's
   `do_stream()` directly, so a tool call was streamed to the caller and never
   executed. It now goes through `ai::stream_text`, which runs the tool loop —
