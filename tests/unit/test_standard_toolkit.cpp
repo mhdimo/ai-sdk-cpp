@@ -6,6 +6,8 @@
 
 #include <boost/asio.hpp>
 
+#include "temp_dir.hpp"
+
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -28,23 +30,7 @@ T run(ai::Task<T> task, boost::asio::io_context& ioc) {
     return task.get();
 }
 
-fs::path make_unique_temp_dir() {
-    static std::atomic<unsigned> counter{0};
-    auto dir = fs::temp_directory_path() /
-               ("ai-sdk-toolkit-test-" + std::to_string(++counter));
-    fs::create_directories(dir);
-    return dir;
-}
-
-// RAII temp directory.
-struct TempDir {
-    fs::path path;
-    TempDir() : path(make_unique_temp_dir()) {}
-    ~TempDir() {
-        std::error_code ec;
-        fs::remove_all(path, ec);
-    }
-};
+using ai::test::TempDir;
 
 void write_file(const fs::path& p, const std::string& content) {
     fs::create_directories(p.parent_path());
