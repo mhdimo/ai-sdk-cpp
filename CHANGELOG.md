@@ -204,6 +204,20 @@ the defects that suite found are fixed — including six that blocked release.
   `describeToolSet()` is guarded; the rest are unchanged as of this release,
   and guarding them is a candidate for 1.0.1 — mechanical, but wide enough that
   it did not belong in a release that is otherwise done.
+- **Nothing retries, and `maxRetries` does not do anything.** The transport does
+  classify: a 408, 429 or 5xx response produces an `ApiCallError` with
+  `is_retryable()` set and, where the server sent one, a `Retry-After` that
+  reaches `retry_after()`. But nothing consumes either. `include/ai/util/retry.hpp`
+  holds a complete `retry_async` with exponential backoff, jitter, `should_retry`
+  and a `get_retry_delay` that already prefers the server's `Retry-After` over
+  its own backoff — and no file in `src/`, `providers/` or `bindings/` includes
+  it. `max_retries` is likewise copied between option structs, including in
+  `tool_loop_agent`, and never read by anything that could retry. So setting
+  `maxRetries` on any entry point is silently inert: the option is accepted, the
+  call is never retried, and no diagnostic says so. Stated here because the
+  failure mode of a retry option that does nothing is a caller who believes
+  they have protection they do not have — and because the signal a caller would
+  need to build their own is at least available on the error.
 - **Google** compiles and is wired through `createGoogle` (including
   `baseUrl`), but has not been exercised against the live API — treat it as
   experimental.
