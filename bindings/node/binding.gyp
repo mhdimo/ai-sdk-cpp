@@ -17,6 +17,14 @@
       "target_name": "ai_sdk_native",
       "cflags!": ["-fno-exceptions"],
       "cflags_cc!": ["-fno-exceptions"],
+      # C++17 here against the core's C++20 is deliberate, not drift. This
+      # target compiles one file, and that file includes <napi.h> and the C
+      # header `ai_sdk.h` -- it never mentions ai::Task or any other C++20-only
+      # core type, because it links libai_sdk and crosses the C ABI. So 17 costs
+      # nothing, and it is what lets `node-gyp rebuild` succeed on a user's
+      # machine with a toolchain whose C++20 support is partial (VS2019, older
+      # Xcode). Raising this to 20 would narrow the set of machines that can
+      # build the addon from source without buying anything.
       "cflags_cc": ["-std=c++17"],
       "sources": ["src/addon.cpp"],
       "include_dirs": [
