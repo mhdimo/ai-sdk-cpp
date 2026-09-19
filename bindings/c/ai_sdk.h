@@ -89,6 +89,21 @@ ai_status_t ai_tool_set_add(
     void* user_data
 );
 
+/* What a tool set contains, as JSON: an array of objects with the three fields
+ * a model is told about -- "name", "description" and "input_schema". Same
+ * ownership rule as ai_batch_result_t: the string belongs to `_storage` and is
+ * released by ai_tool_set_description_free. Tools are ordered by name, so the
+ * same set always describes itself the same way and callers can compare two
+ * descriptions. */
+typedef struct {
+    const char* json;          /* array of {name, description, input_schema} */
+    int count;                 /* number of tools described */
+    void* _storage;            /* internal; freed by ai_tool_set_description_free */
+} ai_tool_set_description_t;
+
+ai_status_t ai_tool_set_describe_json(ai_tool_set_t tools, ai_tool_set_description_t* result);
+void ai_tool_set_description_free(ai_tool_set_description_t* result);
+
 /* --------------------------------------------------------------------------
  * generate_text — synchronous (blocks until complete)
  * -------------------------------------------------------------------------- */

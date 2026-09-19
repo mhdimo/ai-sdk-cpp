@@ -321,6 +321,40 @@ test('mergeToolSets() keeps the merged definitions usable', async () => {
   assert.match(await toolResultContent(), /pineapple/);
 });
 
+// --- describing tool sets -------------------------------------------------
+
+test('describeToolSet() reports what a set exposes, in name order', () => {
+  const described = ai.describeToolSet(ai.standardToolkit());
+
+  assert.ok(Array.isArray(described));
+  assert.ok(described.length >= 5, 'the standard toolkit has several tools');
+
+  const names = described.map((t) => t.name);
+  assert.deepEqual(
+    names,
+    [...names].sort(),
+    'the order is stable, or two descriptions cannot be compared'
+  );
+  assert.ok(names.includes('read_file'));
+
+  const readFile = described.find((t) => t.name === 'read_file');
+  assert.equal(typeof readFile.description, 'string');
+  assert.equal(typeof readFile.inputSchema, 'object');
+  assert.equal(readFile.inputSchema.type, 'object');
+});
+
+test('describeToolSet() reads through a wrapped tool set', () => {
+  // ToolSet has no public constructor, so the interesting case is a set the
+  // public API derives rather than builds: if this only worked on a raw
+  // toolkit it would be useless for the MCP and permissions sets, which are
+  // exactly the ones you cannot otherwise see inside.
+  const gated = ai.withPermissions(ai.standardToolkit(), () => ai.PermissionDecision.Allow);
+
+  const names = ai.describeToolSet(gated).map((t) => t.name);
+  assert.ok(names.includes('read_file'), 'the wrapper does not hide the tools it wraps');
+  assert.deepEqual(names, [...names].sort(), 'order stays stable through a wrapper');
+});
+
 // --- sessions with memory -------------------------------------------------
 
 test('a session with memoryDir runs the turn and creates its memory directory', async () => {

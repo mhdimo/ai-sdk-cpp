@@ -3,11 +3,15 @@
 #include "ai_sdk.h"
 #include "local_http_server.hpp"
 
+#include <boost/json.hpp>
+
 #include <array>
 #include <atomic>
 #include <ctime>
 #include <string>
 #include <vector>
+
+namespace json = boost::json;
 
 namespace {
 
@@ -160,6 +164,93 @@ struct Probe {
 ai_tool_result_t probe_tool(const char*, const char*, void* user_data) {
     static_cast<Probe*>(user_data)->runs.fetch_add(1);
     return ai_tool_result_t{R"({"ok":true})", 0};
+}
+
+TEST_CASE("a tool set describes its tools as JSON", "[c_binding][toolset]") {
+    ai_tool_set_t tools = ai_tool_set_create();
+    REQUIRE(tools != nullptr);
+    REQUIRE(ai_tool_set_add(tools, "probe", "records that it ran", kProbeSchema, probe_tool,
+                            nullptr) == AI_OK);
+
+    ai_tool_set_description_t desc{};
+    REQUIRE(ai_tool_set_describe_json(tools, &desc) == AI_OK);
+    CHECK(desc.count == 1);
+
+    // Parsed rather than substring-matched: the claim is about the shape a
+    // consumer can rely on, and "does the text contain this word" would pass
+    // for output that is not JSON at all.
+    auto parsed = json::parse(desc.json);
+    REQUIRE(parsed.is_array());
+    REQUIRE(parsed.as_array().size() == 1);
+
+    const auto& entry = parsed.as_array()[0].as_object();
+    CHECK(entry.at("name") == "probe");
+    CHECK(entry.at("description") == "records that it ran");
+    CHECK(entry.at("input_schema").as_object().at("type") == "object");
+
+    ai_tool_set_description_free(&desc);
+    CHECK(desc.json == nullptr);
+    CHECK(desc.count == 0);
+    ai_tool_set_destroy(tools);
+}
+
+TEST_CASE("a tool set describes its tools in name order", "[c_binding][toolset]") {
+    // A ToolSet is an unordered_map underneath, so without the sort this comes
+    // out in a different order every run and no two descriptions can be
+    // compared.
+    ai_tool_set_t tools = ai_tool_set_create();
+    REQUIRE(tools != nullptr);
+    for (const char* name : {"zeta", "alpha", "mid"}) {
+        REQUIRE(ai_tool_set_add(tools, name, "", kProbeSchema, probe_tool, nullptr) == AI_OK);
+    }
+
+    ai_tool_set_description_t desc{};
+    REQUIRE(ai_tool_set_describe_json(tools, &desc) == AI_OK);
+    REQUIRE(desc.count == 3);
+
+    auto parsed = json::parse(desc.json).as_array();
+    CHECK(parsed[0].as_object().at("name") == "alpha");
+    CHECK(parsed[1].as_object().at("name") == "mid");
+    CHECK(parsed[2].as_object().at("name") == "zeta");
+
+    ai_tool_set_description_free(&desc);
+    ai_tool_set_destroy(tools);
+}
+
+TEST_CASE("an empty tool set describes itself as an empty array", "[c_binding][toolset]") {
+    ai_tool_set_t tools = ai_tool_set_create();
+    REQUIRE(tools != nullptr);
+
+    ai_tool_set_description_t desc{};
+    REQUIRE(ai_tool_set_describe_json(tools, &desc) == AI_OK);
+    CHECK(desc.count == 0);
+    CHECK(std::string(desc.json) == "[]");
+
+    ai_tool_set_description_free(&desc);
+    ai_tool_set_destroy(tools);
+}
+
+TEST_CASE("describing a tool set rejects null arguments and frees safely",
+          "[c_binding][toolset]") {
+    ai_tool_set_t tools = ai_tool_set_create();
+    REQUIRE(tools != nullptr);
+
+    ai_tool_set_description_t desc{};
+    CHECK(ai_tool_set_describe_json(nullptr, &desc) == AI_ERROR_INVALID_ARGUMENT);
+    CHECK(ai_tool_set_describe_json(tools, nullptr) == AI_ERROR_INVALID_ARGUMENT);
+
+    // Free gets called on a zeroed struct by callers who checked the status and
+    // bailed, and on an already-freed one by callers who did not. Neither may
+    // touch the heap.
+    ai_tool_set_description_t zeroed{};
+    ai_tool_set_description_free(&zeroed);
+    ai_tool_set_description_free(nullptr);
+
+    REQUIRE(ai_tool_set_describe_json(tools, &desc) == AI_OK);
+    ai_tool_set_description_free(&desc);
+    ai_tool_set_description_free(&desc);
+
+    ai_tool_set_destroy(tools);
 }
 
 /// An agent whose provider talks to a loopback server, wired up with a

@@ -1192,6 +1192,30 @@ Napi::Value MergeToolSets(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// What the tool set contains, as a JSON string. Parsed on the JS side, which is
+// where the shape belongs: this side only has to hand over the bytes.
+Napi::Value DescribeToolSet(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected (toolSet)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto* wrap = Napi::ObjectWrap<ToolSetWrapper>::Unwrap(info[0].As<Napi::Object>());
+
+    ai_tool_set_description_t desc{};
+    const ai_status_t status = ai_tool_set_describe_json(wrap->handle(), &desc);
+    if (status != AI_OK) {
+        Napi::Error::New(env, "Could not describe the tool set").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    // Copied into a V8 string before the storage is released, since `desc.json`
+    // points into it.
+    Napi::String json = Napi::String::New(env, desc.json);
+    ai_tool_set_description_free(&desc);
+    return json;
+}
+
 Napi::Value McpToolsetFromServer(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 2) {
@@ -1383,6 +1407,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("standardToolkit", Napi::Function::New(env, StandardToolkit));
     exports.Set("withPermissions", Napi::Function::New(env, WithPermissions));
     exports.Set("mergeToolSets", Napi::Function::New(env, MergeToolSets));
+    exports.Set("describeToolSet", Napi::Function::New(env, DescribeToolSet));
     exports.Set("mcpToolsetFromServer", Napi::Function::New(env, McpToolsetFromServer));
     exports.Set("version", Napi::Function::New(env, GetVersion));
     // Feature flag for the third `withPermissions` argument — a JS shim that

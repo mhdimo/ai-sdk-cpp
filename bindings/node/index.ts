@@ -43,6 +43,7 @@ interface NativeBinding {
   supportsApprover?: boolean;
   version(): string;
   mergeToolSets(dest: NativeToolSet, src: NativeToolSet): void;
+  describeToolSet(tools: NativeToolSet): string;
   mcpToolsetFromServer(ctx: NativeContext, configJson: string): NativeToolSet;
 }
 
@@ -378,6 +379,37 @@ export function version(): string {
 /** Merge `src` tool set into `dest` (e.g. combine custom tools with MCP tools). */
 export function mergeToolSets(dest: StandardToolSet, src: StandardToolSet): void {
   native.mergeToolSets(dest, src);
+}
+
+/** One tool, as a model is told about it when the set is passed to a call. */
+export interface ToolDescription {
+  name: string;
+  /** null when the tool was registered without a description. */
+  description: string | null;
+  inputSchema: unknown;
+}
+
+/**
+ * The tools in a set, ordered by name.
+ *
+ * The order is stable, so two descriptions can be compared — which is the
+ * point of having this at all: it is how you find out what an MCP server or a
+ * merged set actually exposes before handing it to an agent.
+ */
+export function describeToolSet(tools: StandardToolSet): ToolDescription[] {
+  // The C API speaks snake_case; everything this package hands back is
+  // camelCase (see the usage object on a stream event), so map it at the
+  // boundary rather than leaking the C spelling into the public types.
+  const raw = JSON.parse(native.describeToolSet(tools)) as Array<{
+    name: string;
+    description: string | null;
+    input_schema: unknown;
+  }>;
+  return raw.map((t) => ({
+    name: t.name,
+    description: t.description,
+    inputSchema: t.input_schema,
+  }));
 }
 
 /** Connect to an MCP server and return its tools as a ToolSet. */

@@ -17,7 +17,7 @@ the defects that suite found are fixed — including six that blocked release.
   and `streamText` were already async and are unchanged.
 
 ### Added — Node binding
-- **Test suite** (`bindings/node/test/`): 50 cases over the public surface —
+- **Test suite** (`bindings/node/test/`): 60 cases over the public surface —
   every provider factory, tool-calling through each entry point, streaming
   events, sessions, memory, batch, MCP, standard toolkit, permissions, and
   tool-set merging. Hermetic: a mock provider server stands in for the vendor
@@ -31,6 +31,13 @@ the defects that suite found are fixed — including six that blocked release.
   the checkpoint writer, and token usage on the stream finish event.
 - `mergeToolSets()`, `mcpToolsetFromServer()`, `standardToolkit()`,
   `withPermissions()`, `MemoryStore`, `Batch`, and `Agent` extra tool sets.
+- **Tool-set introspection**: `describeToolSet()` in Node, backed by
+  `ai_tool_set_describe_json()` in the C API, reports the tools in a set as
+  `{name, description, inputSchema}` ordered by name. Ordered because the
+  underlying container is an unordered map and a description that comes back in
+  a different order every run cannot be compared against anything — and it is
+  the sets you cannot otherwise see into (an MCP server's tools, a
+  permission-wrapped set) that this is for.
 - Provider options can be passed through to agents from C and Node.
 
 ### Fixed
@@ -81,7 +88,7 @@ the defects that suite found are fixed — including six that blocked release.
   binding's `version()` and `package.json` agree.
 
 ### Tests
-- 117 offline unit tests (`ctest`), plus the 50-case Node suite. Both run in CI
+- 162 offline unit tests (`ctest`), plus the 60-case Node suite. Both run in CI
   on every push; neither needs an API key or network access.
 - `scripts/coverage.sh` reports what those tests actually exercise (Clang
   source-based coverage). It covers the SDK but not the socket layer or the C

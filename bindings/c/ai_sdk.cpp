@@ -24,6 +24,7 @@
 #endif
 #include <boost/asio.hpp>
 #include <boost/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <memory>
@@ -524,6 +525,58 @@ ai_status_t ai_tool_set_add(
     ));
 
     return AI_OK;
+}
+
+ai_status_t ai_tool_set_describe_json(ai_tool_set_t tools, ai_tool_set_description_t* result) {
+    if (!tools || !result) return AI_ERROR_INVALID_ARGUMENT;
+
+    result->json = nullptr;
+    result->count = 0;
+    result->_storage = nullptr;
+
+    // A ToolSet is an unordered_map underneath, so iterating it directly would
+    // describe the same tools in a different order from one process to the
+    // next. A description a caller cannot compare against another is not much
+    // of a description, and it would make any test of this flaky, so sort by
+    // name first.
+    auto ordered = tools->tools.all();
+    std::sort(ordered.begin(), ordered.end(),
+              [](const ai::ToolDefinition* a, const ai::ToolDefinition* b) {
+                  return a->name < b->name;
+              });
+
+    auto* storage = new std::string();
+    try {
+        json::array arr;
+        for (const auto* definition : ordered) {
+            json::object entry;
+            entry["name"] = definition->name;
+            // An absent description is reported as JSON null rather than
+            // omitted, so every entry has the same three keys.
+            entry["description"] = definition->description
+                ? json::value(*definition->description) : json::value();
+            entry["input_schema"] = definition->input_schema.raw();
+            arr.push_back(std::move(entry));
+        }
+        *storage = json::serialize(arr);
+        result->count = static_cast<int>(arr.size());
+    } catch (const std::exception&) {
+        delete storage;
+        return AI_ERROR_INTERNAL;
+    }
+
+    result->json = storage->c_str();
+    result->_storage = storage;
+    return AI_OK;
+}
+
+void ai_tool_set_description_free(ai_tool_set_description_t* result) {
+    if (result && result->_storage) {
+        delete static_cast<std::string*>(result->_storage);
+        result->_storage = nullptr;
+        result->json = nullptr;
+        result->count = 0;
+    }
 }
 
 ai_status_t ai_generate_text(ai_generate_options_t opts, ai_generate_result_t* result) {
