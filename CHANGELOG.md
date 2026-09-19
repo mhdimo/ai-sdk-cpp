@@ -3,20 +3,224 @@
 All notable changes to ai-sdk-cpp. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.0.0] - 2026-09-18
+
+The bindings stop being a preview. The Node binding is now covered by a
+hermetic test suite (mock provider server, no API keys) that runs in CI, and
+the defects that suite found are fixed — including six that blocked release.
+
+### Changed — BREAKING
+- **Node: `Session.send()` and `Agent.call()` are now `async`.** They return a
+  promise and no longer block the JS event loop for the whole turn. A turn that
+  calls a tool has to hand control back to the event loop the tool's own JS
+  runs on; blocking there deadlocked the process. `await` both. `generateText`
+  and `streamText` were already async and are unchanged.
+
+### Added — Node binding
+- **Test suite** (`bindings/node/test/`): 64 cases over the public surface —
+  every provider factory, tool-calling through each entry point, streaming
+  events, sessions, memory, batch, MCP, standard toolkit, permissions, and
+  tool-set merging. Hermetic: a mock provider server stands in for the vendor
+  APIs, so it needs no keys and no network. Cases that drive a JS tool callback
+  run out-of-process under a wall-clock budget, because a deadlock in one of
+  those blocks the event loop so completely that an in-process timeout could
+  never fire to fail the test.
+- **CI job** (`node-binding`) building the C library and running the suite.
+- `streamText` accepts `messages`, `tools`, and `maxSteps`.
+- `Session` with persistent memory (auto-inject recall + auto-compaction),
+  the checkpoint writer, and token usage on the stream finish event.
+- `mergeToolSets()`, `mcpToolsetFromServer()`, `standardToolkit()`,
+  `withPermissions()`, `MemoryStore`, `Batch`, and `Agent` extra tool sets.
+- **Tool-set introspection**: `describeToolSet()` in Node, backed by
+  `ai_tool_set_describe_json()` in the C API, reports the tools in a set as
+  `{name, description, inputSchema}` ordered by name. Ordered because the
+  underlying container is an unordered map and a description that comes back in
+  a different order every run cannot be compared against anything — and it is
+  the sets you cannot otherwise see into (an MCP server's tools, a
+  permission-wrapped set) that this is for.
+- Provider options can be passed through to agents from C and Node.
 
 ### Fixed
+- **Every tool call leaked its output, in both language bindings.** The C API
+  documented no ownership for `ai_tool_result_t.output_json`, and the two
+  bindings each guessed wrong the same way: Python and Node both allocated a
+  fresh buffer per call with `new char[]`, and nothing on either side of the
+  call freed it. Measured at 155 MiB of RSS after 150 tool calls of 1 MiB — a
+  leak proportional to what the tools return, in a loop the SDK exists to run
+  for days, and invisible to every test that checks values rather than memory.
+  The buffer is now a `thread_local` string per binding, reused by the next
+  call on that thread and released when the thread exits, and the ownership
+  rule — borrowed, valid until the callback returns — is written on the type
+  in `bindings/c/ai_sdk.h`. A regression test drives 150 tool calls in a
+  separate process and fails on RSS growth; run against the old code it reports
+  the full 155 MiB, so it is measuring the leak and not the machine.
+- **The shipped Linux library was going to need a newer libstdc++ than Ubuntu
+  22.04 has.** The option that links the C++ runtime into `libai_sdk.so`
+  statically is on by default for GNU, but its guard tested `CXX_COMPILER_ID`
+  instead of `CMAKE_CXX_COMPILER_ID` — not a CMake variable at all, so the
+  comparison was false on every compiler and the flags were never applied. The
+  build reported the option as enabled while producing a library that depended
+  on the runtime of the machine that built it. Since the prebuild is built by
+  GCC 13 and Ubuntu 22.04 ships an older libstdc++, this failed at `require()`
+  on exactly the systems the 22.04 matrix entries exist to serve. The guard is
+  fixed, and the warning it produced ("the compiler is GNU, not GNU") was the
+  only sign anything was wrong.
+- **A prebuild recorded an empty rpath entry.** `binding.gyp` supplied the
+  loader-relative rpath twice, once per-OS and once through a shared variable.
+  The shared one reached the Makefile unquoted, so the shell read `$O` as an
+  unset variable and expanded it to nothing; the linker recorded the result as
+  an empty element. An empty rpath element is not ignored — it means the
+  current working directory, so the loader would also have taken `libai_sdk.so`
+  from wherever the process happened to be running. Both entries looked
+  identical in the Makefile and only one survived; the duplicate is gone, and
+  the prebuild now records exactly one rpath, asserted by value after the link.
+- **A failed `Session.sendStream()` turn reported success.** When the request
+  never got a response — refused connection, DNS failure, timeout — the
+  session entry point returned its error status without emitting a terminal
+  event, and the binding, whose fallback exists to stop a consumer waiting
+  forever, filled the gap with a *finish*. The caller got a turn that had
+  succeeded and produced nothing: zero tokens, empty `finishReason`, no error.
+  The status-code failures (401/429/500) were never affected — those arrive as
+  a response and were already surfaced from inside the stream — and neither was
+  an agent carrying tools, which routes the same failure through the stream.
+  It took a tool-less agent plus a server that never answered to reach it.
+  `ai_stream_text` has always emitted `AI_STREAM_ERROR` from its catch; the
+  session entry point now does too, and the binding's fallback fails closed
+  rather than reporting a finish it never received.
+- **`streamText` silently dropped tool calls.** It called the model's
+  `do_stream()` directly, so a tool call was streamed to the caller and never
+  executed. It now goes through `ai::stream_text`, which runs the tool loop —
+  fixed in the C binding, so the Python, Rust, and Go bindings inherit it.
+- **A tool call hung the blocking entry points at 100% CPU forever.** The C
+  binding busy-waits on the event loop while the coroutine awaits a JS tool
+  callback, but the callback could only run on the event loop the caller was
+  blocking. Tool callbacks now run on a worker thread and resolve a promise.
+- **`Batch.run()` hung at 100% CPU**, having polled exactly once. `run_batch()`
+  waits between polls on an event-loop timer; an in-flight HTTP call left the
+  loop with no queued work, which *stops* it, so the timer could never fire.
+  The driver now restarts the loop before each `run_one()`.
+- **Batch results carried the wrong `customId`** — every item but the last got
+  a dangling pointer, because request strings were stored via `c_str()` while
+  the container they lived in was still reallocating.
+- **`withPermissions()` aborted the process** (`Fatal error in
+  v8::HandleScope::CreateHandle`): the policy callback called into JS from the
+  tool's worker thread, which has no handle scope. It now goes through a
+  `ThreadSafeFunction`.
+- **Empty `text_delta` events rendered as the literal string `"undefined"`.**
+  Providers legitimately emit empty deltas between real tokens; events whose
+  payload is text now always carry a string.
+- **`createGoogle` ignored `baseUrl`** and had no `GOOGLE_BASE_URL` env
+  fallback, so the provider could not be pointed anywhere but the default host.
 - **`Task` start-then-await**: `co_await` on a `Task` that was already
   `start()`ed re-entered the coroutine mid-await and read an empty result
   (silent nulls / UB). `await_suspend` now registers the continuation and
   suspends for in-flight tasks; only fresh tasks are launched. Move
   construction carries the started flag.
+- **Checkpoint writer never fired for streamed turns**: `send_stream` did not
+  increment the session turn counter.
+- **Use-after-free on GC** in the Node tool callback path (`SIGTRAP`).
+- **The npm tarball carried no licence text and no README.** `license: "MIT"`
+  was set in `package.json`, but the MIT text lives at the repository root and
+  npm only auto-includes it from the package root — so the published artifact
+  shipped the label without the notice it refers to, which is the part MIT
+  actually requires. The package also rendered on the registry with no readme
+  at all, because there was none in `bindings/node/`. Both files are now in the
+  package, along with `repository`, `homepage`, `bugs` and `keywords`, which
+  were absent for the same reason: nobody had looked at the manifest as a
+  *published* artifact rather than a working directory. The README's examples
+  are not illustrative — every call in it was run against the binding, and the
+  event-type list it documents was checked against what the stream emits.
+- **The prebuild matrix would not have produced a tarball.** Two independent
+  faults, neither visible from a developer machine, both fatal to the release.
+  The `darwin-x64` leg was pinned to `macos-13`, which GitHub retired on
+  2025-12-04 — a job on a retired label does not fail to build, it dies before
+  starting. And the macOS dependency step exported `OpenSSL_DIR`, which is the
+  hint for CMake's *config* mode; the project resolves OpenSSL through
+  `FindOpenSSL.cmake`, which reads `OPENSSL_ROOT_DIR` and ignores the other. On
+  a Mac with Homebrew already on the default search path neither was
+  observable, because configure succeeds whatever the variable says. Since
+  `assemble` sits behind `needs: prebuild` with no `if:`, one dead leg skips it
+  and `npm pack` never runs — so the failure mode was not a broken package but
+  no package. Both are fixed and the runner labels verified against GitHub's
+  current lists. Separately noted: `ubuntu-22.04`, which the Linux legs use for
+  its glibc 2.35 floor, entered deprecation on 2026-09-17 and retires
+  2027-04-17; the migration must keep that floor, which means building inside a
+  22.04 container on a newer runner rather than moving to `ubuntu-24.04` and
+  raising it to 2.39.
 
 ### Changed
 - **Parallel tool execution**: `execute_tools` (generate + stream paths)
   launches all tool calls in a step before awaiting results, so independent
   calls interleave on the event loop instead of serializing behind the slowest
   tool. Results stay in tool-call order; per-call error isolation unchanged.
+- **Provider-scoped reasoning effort**, and an opt-in checkpoint summarizer
+  with a configurable proactive-compaction threshold.
+- **The version string has one source of truth.** `ai_sdk_version()` and the
+  MCP `clientInfo` handshake are compiled from the CMake project version
+  (`include/ai/version.hpp`) instead of a retyped literal, so they cannot drift
+  from the release number the package manifests carry. A test asserts the
+  binding's `version()` and `package.json` agree.
+
+### Tests
+- 162 offline unit tests (`ctest`), plus the 61-case Node suite. Both run in CI
+  on every push; neither needs an API key or network access.
+- `scripts/coverage.sh` reports what those tests actually exercise (Clang
+  source-based coverage). It covers the SDK but not the socket layer or the C
+  binding — the unit tests substitute their own `IHttpClient`, so those are
+  covered by the Node suite instead. The script says so in its output.
+
+### Notes & known limitations
+- **Building requires GCC 13 or newer, or Clang.** GCC 11 and 12 miscompile the
+  library's coroutines: 30 of the 158 tests the suite held when this was measured
+  crashed on them, at `-O0` and `-O3` alike, while GCC 13 passed all 158 on the
+  same OS, standard library and Boost. A build that succeeded on those compilers
+  would therefore still be a library that segfaults, so the build now refuses
+  them by name instead of letting that through —
+  `-DAI_SDK_ALLOW_UNSUPPORTED_COMPILER=ON` overrides it. This lands hardest on
+  Ubuntu 22.04, RHEL 9 and Debian 12, whose default repositories ship GCC 11 or
+  12. On Ubuntu 22.04 a newer GCC is one package away
+  (`ppa:ubuntu-toolchain-r/test` carries `g++-13`), and that is the better route
+  there than Clang: this project builds Clang with `-stdlib=libc++`, and libc++
+  is not installed by default on any of those distributions.
+  `sudo apt-get install libc++-dev libc++abi-dev` is the other way, with the
+  caveat that anything you link against it then needs libc++ at runtime too.
+- **An ambient `ANTHROPIC_AUTH_TOKEN` outranks an explicitly passed `apiKey`.**
+  The Anthropic provider advertises two credentials and prefers the Bearer
+  token (`docs/providers.md`), resolving each independently, so if the
+  environment carries `ANTHROPIC_AUTH_TOKEN` — which it does for anyone running
+  Claude Code against an Anthropic-compatible gateway — `createAnthropic({
+  apiKey })` authenticates with the ambient token instead. Requests fail, or
+  are billed elsewhere, with nothing in the error to say why. Unset the
+  variable, or set `authToken` deliberately, if you meant the key you passed.
+  Changing the precedence is a candidate for a future release, not this one.
+- **Streaming reports failures as a terminal `error` event, not a throw.**
+  `streamText`/`sendStream` yield `{ type: 'error' }` and end; they do not
+  reject. Callers must check for it.
+- **Node: passing the wrong kind of object to an entry point can abort the
+  process instead of throwing.** Eighteen call sites across five wrapper types
+  (context, provider, model, tool set, agent) unwrap their arguments without
+  checking that the unwrap succeeded, so `withPermissions({}, policy)` or the
+  like reaches a null handle and dies rather than raising a catchable error.
+  `describeToolSet()` is guarded; the rest are unchanged as of this release,
+  and guarding them is a candidate for 1.0.1 — mechanical, but wide enough that
+  it did not belong in a release that is otherwise done.
+- **Nothing retries, and `maxRetries` does not do anything.** The transport does
+  classify: a 408, 429 or 5xx response produces an `ApiCallError` with
+  `is_retryable()` set and, where the server sent one, a `Retry-After` that
+  reaches `retry_after()`. But nothing consumes either. `include/ai/util/retry.hpp`
+  holds a complete `retry_async` with exponential backoff, jitter, `should_retry`
+  and a `get_retry_delay` that already prefers the server's `Retry-After` over
+  its own backoff — and no file in `src/`, `providers/` or `bindings/` includes
+  it. `max_retries` is likewise copied between option structs, including in
+  `tool_loop_agent`, and never read by anything that could retry. So setting
+  `maxRetries` on any entry point is silently inert: the option is accepted, the
+  call is never retried, and no diagnostic says so. Stated here because the
+  failure mode of a retry option that does nothing is a caller who believes
+  they have protection they do not have — and because the signal a caller would
+  need to build their own is at least available on the error.
+- **Google** compiles and is wired through `createGoogle` (including
+  `baseUrl`), but has not been exercised against the live API — treat it as
+  experimental.
 
 ## [0.1.0] - 2026-06-22
 

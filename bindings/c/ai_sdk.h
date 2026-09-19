@@ -71,7 +71,19 @@ void ai_model_destroy(ai_model_t model);
  * -------------------------------------------------------------------------- */
 
 typedef struct {
-    const char* output_json;   /* JSON string of the tool output */
+    /* JSON string of the tool output.
+     *
+     * Borrowed, not transferred. The library parses it into its own storage
+     * before ai_tool_fn returns and keeps no reference afterwards, so the
+     * callback owns this buffer and is free to reuse it -- a static or
+     * thread-local buffer is the intended shape, and a string literal is fine.
+     *
+     * It must stay valid until the callback has returned, which rules out a
+     * pointer into a local that has gone out of scope by then. Allocating a
+     * fresh buffer per call is also wrong, in a way that is invisible: nothing
+     * on either side of this contract frees it, so each call leaks the output
+     * for the life of the process. Both language bindings shipped that way. */
+    const char* output_json;
     int is_error;              /* 0 = success, 1 = error */
 } ai_tool_result_t;
 
@@ -88,6 +100,21 @@ ai_status_t ai_tool_set_add(
     ai_tool_fn callback,
     void* user_data
 );
+
+/* What a tool set contains, as JSON: an array of objects with the three fields
+ * a model is told about -- "name", "description" and "input_schema". Same
+ * ownership rule as ai_batch_result_t: the string belongs to `_storage` and is
+ * released by ai_tool_set_description_free. Tools are ordered by name, so the
+ * same set always describes itself the same way and callers can compare two
+ * descriptions. */
+typedef struct {
+    const char* json;          /* array of {name, description, input_schema} */
+    int count;                 /* number of tools described */
+    void* _storage;            /* internal; freed by ai_tool_set_description_free */
+} ai_tool_set_description_t;
+
+ai_status_t ai_tool_set_describe_json(ai_tool_set_t tools, ai_tool_set_description_t* result);
+void ai_tool_set_description_free(ai_tool_set_description_t* result);
 
 /* --------------------------------------------------------------------------
  * generate_text — synchronous (blocks until complete)
@@ -253,15 +280,62 @@ enum {
     AI_PERMISSION_ALLOW = 0,
     AI_PERMISSION_DENY = 1,
     AI_PERMISSION_ASK = 2,
+    /// Approver-only: allow this call and skip the approver for this tool for
+    /// the rest of the session.
+    AI_PERMISSION_ALLOW_ALWAYS = 3,
 };
+
+/// Bytes available in the `reason` buffer handed to a policy or approver,
+/// including the terminating NUL. Longer text is truncated.
+#define AI_REASON_MAX 512
 
 /// Synchronous permission policy: inspect (tool, input_json) and return a
 /// decision. `user_data` is passed through from ai_with_permissions.
-typedef int (*ai_permission_policy_fn)(const char* tool, const char* input_json, void* user_data);
+///
+/// To explain a refusal, write a sentence into `reason` with snprintf and
+/// return AI_PERMISSION_DENY. It reaches the model as part of the tool result,
+/// so it should say what would have to change — a model told only that a call
+/// was refused will try variations of it.
+///
+/// `reason` is a writable AI_REASON_MAX-byte buffer, empty on entry; writing
+/// nothing means "no explanation". It belongs to the SDK, so there is nothing
+/// to allocate and nothing to free.
+///
+/// C++ callers: annotate the callback `-> int`. The AI_PERMISSION_* constants
+/// belong to an unnamed enum, and a lambda returning one deduces that enum as
+/// its return type; conversion to a function pointer requires an identical
+/// return type, so the lambda will not convert. (Naming the enum would not
+/// help — it would still be a distinct type from int.)
+typedef int (*ai_permission_policy_fn)(const char* tool, const char* input_json,
+                                       char* reason, void* user_data);
 
 /// Return a copy of `tools` where each execute is gated by `policy`.
 /// (Ask with no interactive approver fails closed -> Deny.)
 ai_tool_set_t ai_with_permissions(ai_tool_set_t tools, ai_permission_policy_fn policy, void* user_data);
+
+/// Interactive approver, called only when the policy returns AI_PERMISSION_ASK.
+/// Returns AI_PERMISSION_ALLOW, AI_PERMISSION_ALLOW_ALWAYS or AI_PERMISSION_DENY;
+/// anything else is treated as Deny. `rationale` is human-readable text from the
+/// engine. Called on the engine's worker thread, so an implementation may block
+/// while a UI collects the answer — but it must not call back into the agent.
+///
+/// `reason` works as it does on ai_permission_policy_fn, with one rule for a
+/// DENY that writes nothing: the policy's reason, if it gave one, is used
+/// instead. That is usually what a UI wants — the prompt it showed the user
+/// explains the refusal better than the bare fact that they clicked no. Write
+/// to it to say something else ("the user declined", "rate limited, try later").
+///
+/// C++ callers: annotate the callback `-> int`, for the reason given on
+/// ai_permission_policy_fn.
+typedef int (*ai_approver_fn)(const char* tool, const char* input_json,
+                              const char* rationale, char* reason, void* user_data);
+
+/// As ai_with_permissions, but `Ask` escalates to `approver`, which decides,
+/// instead of failing closed. A NULL `approver` behaves exactly like
+/// ai_with_permissions.
+ai_tool_set_t ai_with_permissions_approver(ai_tool_set_t tools,
+                                           ai_permission_policy_fn policy, void* policy_user_data,
+                                           ai_approver_fn approver, void* approver_user_data);
 
 /* --------------------------------------------------------------------------
  * Memory — persistent cross-session project knowledge.
@@ -282,8 +356,15 @@ ai_status_t ai_memory_save(ai_memory_store_t store, const char* scope,
 void ai_tool_set_merge(ai_tool_set_t dest, ai_tool_set_t src);
 
 /// Connect to an MCP server described by `config_json` and return its tools as
-/// a ToolSet. config_json fields: transport ("stdio"|"http"), command, args[],
-/// env{}, url, headers{}. Returns NULL on failure (see ai_last_error).
+/// a ToolSet. config_json fields: name, transport ("stdio"|"http"), command,
+/// args[], env{}, url, headers{}. Returns NULL on failure (see ai_last_error).
+///
+/// `name` is required and is not sent to the server: it qualifies every tool
+/// the server exposes, as `mcp__<name>__<tool>`. That qualified string is what
+/// the model is offered and what permission policies and approvers receive, so
+/// it is what a caller keys rules on. Bare tool names are not exposed, because
+/// two servers may both define `add_numbers` (or `Bash`) and a rule could not
+/// then say which one it meant.
 ai_tool_set_t ai_mcp_toolset_from_server(ai_context_t ctx, const char* config_json);
 
 /* --------------------------------------------------------------------------

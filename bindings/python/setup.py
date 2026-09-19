@@ -35,7 +35,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name="ai-sdk-cpp",
-    version="0.1.0",
+    version="1.0.0",
     author="AI SDK Contributors",
     description="Native C++ AI agent framework with Python bindings",
     long_description=open("README.md").read() if os.path.exists("README.md") else "",

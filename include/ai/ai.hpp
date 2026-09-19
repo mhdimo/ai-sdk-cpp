@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ai/version.hpp>
 #include <ai/core/generate_text.hpp>
 #include <ai/core/stream_text.hpp>
 #include <ai/core/generate_object.hpp>

@@ -13,9 +13,18 @@
  *   });
  */
 
-// The compiled addon lands in build/Release/ (node-gyp output). This file ships
-// from dist/, so the addon is one level up.
-const native = require('../build/Release/ai_sdk_native.node') as NativeBinding;
+// Resolve the compiled addon. node-gyp-build looks in build/Release first —
+// the layout node-gyp produces in a source checkout — and falls back to
+// prebuilds/<platform>-<arch>/node.napi.node, which is what a published tarball
+// ships. The same require therefore works in-repo and after npm install.
+//
+// The argument is the package root, not __dirname: this file is emitted to
+// dist/, and both locations sit beside that directory rather than inside it.
+// The addon's own rpath is @loader_path, so whatever directory it is found in
+// must also hold libai_sdk.
+const native = require('node-gyp-build')(
+  require('path').join(__dirname, '..')
+) as NativeBinding;
 
 interface NativeBinding {
   Context: new () => NativeContext;
@@ -29,9 +38,12 @@ interface NativeBinding {
   MemoryStore: new (dir: string) => NativeMemoryStore;
   Batch: new (provider: NativeProvider, modelId: string) => NativeBatch;
   standardToolkit(): NativeToolSet;
-  withPermissions(tools: NativeToolSet, policy: PermissionPolicy): NativeToolSet;
+  withPermissions(tools: NativeToolSet, policy: PermissionPolicy, approver?: Approver): NativeToolSet;
+  /** Present only on addons that accept the third argument above. */
+  supportsApprover?: boolean;
   version(): string;
   mergeToolSets(dest: NativeToolSet, src: NativeToolSet): void;
+  describeToolSet(tools: NativeToolSet): string;
   mcpToolsetFromServer(ctx: NativeContext, configJson: string): NativeToolSet;
 }
 
@@ -46,7 +58,7 @@ interface NativeAgentOptions {
 }
 
 interface NativeSession {
-  send(prompt: string): NativeResult;
+  send(prompt: string): Promise<NativeResult>;
   sendStream(prompt: string, callback: StreamCallback): void;
   addUser(text: string): void;
   addAssistant(text: string): void;
@@ -69,7 +81,7 @@ interface NativeToolSet {
   add(name: string, description: string, schemaJson: string, callback: ToolCallback): void;
 }
 interface NativeAgent {
-  call(prompt: string): NativeResult;
+  call(prompt: string): Promise<NativeResult>;
 }
 type ToolCallback = (toolName: string, inputJson: string) => Promise<{ output: string; isError: boolean }> | { output: string; isError: boolean };
 type StreamCallback = (type: string, text: string | null, toolName: string | null, toolCallId: string | null, usage: { inputTokens: number; outputTokens: number } | null) => void;
@@ -211,7 +223,7 @@ export async function generateText(opts: GenerateTextOptions): Promise<GenerateR
     nativeOpts.messagesJson = JSON.stringify(opts.messages);
   }
 
-  const result = native.generateText(opts.model._native, nativeOpts);
+  const result = await native.generateText(opts.model._native, nativeOpts);
 
   return {
     text: result.text,
@@ -232,6 +244,17 @@ export interface StreamEvent {
   toolName?: string;
   toolCallId?: string;
 }
+
+/** Events whose payload carries `text`. Deltas are often legitimately empty
+ *  (providers emit them between real tokens), so `text` is always set for these
+ *  — otherwise `out += ev.text` silently appends the string "undefined". */
+const TEXT_EVENTS: ReadonlySet<StreamEvent['type']> = new Set([
+  'text_delta',
+  'tool_call_delta',
+  'reasoning_delta',
+  'tool_result',
+  'error',
+]);
 
 export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<StreamEvent> {
   const queue: StreamEvent[] = [];
@@ -269,7 +292,7 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
   // native.streamText returns immediately; events arrive asynchronously.
   native.streamText(opts.model._native, nativeOpts, (type, text, toolName, toolCallId, usage) => {
     const event: StreamEvent = { type: type as StreamEvent['type'] };
-    if (text) event.text = text;
+    if (text || TEXT_EVENTS.has(event.type)) event.text = text ?? '';
     if (toolName) event.toolName = toolName;
     if (toolCallId) event.toolCallId = toolCallId;
     if (usage) event.usage = usage;
@@ -334,7 +357,7 @@ export class Agent {
   }
 
   async call(prompt: string): Promise<GenerateResult> {
-    const result = this._native.call(prompt);
+    const result = await this._native.call(prompt);
     return {
       text: result.text,
       finishReason: result.finishReason,
@@ -358,6 +381,37 @@ export function mergeToolSets(dest: StandardToolSet, src: StandardToolSet): void
   native.mergeToolSets(dest, src);
 }
 
+/** One tool, as a model is told about it when the set is passed to a call. */
+export interface ToolDescription {
+  name: string;
+  /** null when the tool was registered without a description. */
+  description: string | null;
+  inputSchema: unknown;
+}
+
+/**
+ * The tools in a set, ordered by name.
+ *
+ * The order is stable, so two descriptions can be compared — which is the
+ * point of having this at all: it is how you find out what an MCP server or a
+ * merged set actually exposes before handing it to an agent.
+ */
+export function describeToolSet(tools: StandardToolSet): ToolDescription[] {
+  // The C API speaks snake_case; everything this package hands back is
+  // camelCase (see the usage object on a stream event), so map it at the
+  // boundary rather than leaking the C spelling into the public types.
+  const raw = JSON.parse(native.describeToolSet(tools)) as Array<{
+    name: string;
+    description: string | null;
+    input_schema: unknown;
+  }>;
+  return raw.map((t) => ({
+    name: t.name,
+    description: t.description,
+    inputSchema: t.input_schema,
+  }));
+}
+
 /** Connect to an MCP server and return its tools as a ToolSet. */
 export function mcpToolsetFromServer(configJson: string): StandardToolSet {
   return native.mcpToolsetFromServer(getCtx(), configJson);
@@ -365,15 +419,77 @@ export function mcpToolsetFromServer(configJson: string): StandardToolSet {
 
 // --- Standard toolkit + permissions + session ---
 
-export type PermissionPolicy = (tool: string, inputJson: string) => number;
+/** Mirrors the C enum: what a policy or approver answers with. */
+export const PermissionDecision = {
+  Allow: 0,
+  Deny: 1,
+  /** Policy only: escalate to the approver (without one this fails closed). */
+  Ask: 2,
+  /** Approver only: allow now and stop asking for this tool this session. */
+  AllowAlways: 3,
+} as const;
+export type PermissionDecision = (typeof PermissionDecision)[keyof typeof PermissionDecision];
+
+/** A decision plus the sentence to show the model when refusing a call.
+ *  Returning a bare number means "no explanation". */
+export interface PermissionVerdict {
+  decision: number;
+  /** Shown to the model as part of the tool result. Say what would have to
+   *  change — a model told only that a call was refused retries variants of
+   *  it, and every retry is another prompt the user already answered. */
+  reason?: string;
+}
+
+/** Synchronous rule: answer Allow/Deny/Ask with no I/O. */
+export type PermissionPolicy = (
+  tool: string,
+  inputJson: string,
+) => number | PermissionVerdict;
+
+/** Interactive approver, called only when the policy answers `Ask`. It is
+ *  expected to be async — the usual implementation awaits a UI prompt — and
+ *  its verdict is what allows or refuses the call. `rationale` is a
+ *  human-readable line from the engine, suitable for showing to the user.
+ *
+ *  Anything that is not one of the `PermissionDecision` values (or a rejected
+ *  promise) refuses the call: an approver is a permission gate, so a missing
+ *  `return` must not read as approval.
+ *
+ *  Caveat: a prompt can only be awaited from the streaming/async entry points
+ *  (`Session.sendStream`, `streamText`, and the promise-returning `call`s),
+ *  which run the loop off the JS thread. A blocking main-thread call — the C
+ *  API's `ai_agent_call`, reached from `generateText`/`Agent.call` on the
+ *  synchronous path — cannot park for a prompt, so a promise-returning
+ *  approver there refuses the call and its late verdict is discarded. */
+export type Approver = (
+  tool: string,
+  inputJson: string,
+  rationale: string,
+) => number | PermissionVerdict | Promise<number | PermissionVerdict>;
+
 export type StandardToolSet = NativeToolSet;
 
 export function standardToolkit(): StandardToolSet {
   return native.standardToolkit();
 }
 
-export function withPermissions(tools: StandardToolSet, policy: PermissionPolicy): StandardToolSet {
-  return native.withPermissions(tools, policy);
+/** True when this addon understands the third `withPermissions` argument.
+ *  An older addon would ignore it and silently fail closed on every `Ask`,
+ *  so callers that need a prompt should check rather than assume. */
+export const supportsApprover: boolean = native.supportsApprover === true;
+
+export function withPermissions(
+  tools: StandardToolSet,
+  policy: PermissionPolicy,
+  approver?: Approver,
+): StandardToolSet {
+  if (approver && !supportsApprover) {
+    throw new Error(
+      'ai-sdk-cpp: this native addon predates interactive approvals (rebuild it), ' +
+        'so an `Ask` could not reach your approver',
+    );
+  }
+  return native.withPermissions(tools, policy, approver);
 }
 
 export interface SessionOptions {
@@ -405,14 +521,13 @@ export class Session {
     }
   }
 
-  send(prompt: string): GenerateResult {
-    const result = this._native.send(prompt);
-    return {
+  send(prompt: string): Promise<GenerateResult> {
+    return this._native.send(prompt).then((result) => ({
       text: result.text,
       finishReason: result.finishReason,
       usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens },
       steps: result.steps,
-    };
+    }));
   }
 
   addUser(text: string): void {
@@ -443,7 +558,7 @@ export class Session {
 
     this._native.sendStream(prompt, (type, text, toolName, toolCallId, usage) => {
       const ev: StreamEvent = { type: type as StreamEvent['type'] };
-      if (text) ev.text = text;
+      if (text || TEXT_EVENTS.has(ev.type)) ev.text = text ?? '';
       if (toolName) ev.toolName = toolName;
       if (toolCallId) ev.toolCallId = toolCallId;
       if (usage) ev.usage = usage;

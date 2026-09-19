@@ -1,6 +1,8 @@
 #include <ai/stream/data_stream.hpp>
+#include <ai/util/json.hpp>
 #include <boost/json.hpp>
 #include <sstream>
+#include <utility>
 
 namespace ai::stream {
 
@@ -69,52 +71,60 @@ std::optional<StreamPart> DataStreamDecoder::decode_line(std::string_view line) 
     char type = line[0];
     auto payload = line.substr(2);
 
+    // These frames arrive off a socket, so a truncated or non-conforming one is
+    // the expected case rather than an exceptional one. Every parse and every
+    // field lookup below therefore has to fail as nullopt: an exception here
+    // unwinds out of the caller's read loop, which is the one place it cannot be
+    // handled. ai::json wraps boost::json's non-throwing forms for exactly this.
+    auto val = ai::json::safe_parse(payload);
+    if (!val) return std::nullopt;
+
     switch (type) {
         case '0': {
-            auto val = json::parse(payload);
-            return TextDelta{.id = "0", .delta = std::string(val.as_string())};
+            if (!val->is_string()) return std::nullopt;
+            return TextDelta{.id = "0", .delta = std::string(val->as_string())};
         }
         case '1': {
-            auto val = json::parse(payload);
-            auto& obj = val.as_object();
-            return ToolInputStart{
-                .id = std::string(obj.at("toolCallId").as_string()),
-                .tool_name = std::string(obj.at("toolName").as_string()),
-            };
+            auto id = ai::json::get_string(*val, "toolCallId");
+            auto name = ai::json::get_string(*val, "toolName");
+            if (!id || !name) return std::nullopt;
+            return ToolInputStart{.id = std::move(*id), .tool_name = std::move(*name)};
         }
         case '2': {
-            auto val = json::parse(payload);
-            auto& obj = val.as_object();
-            return ToolInputDelta{
-                .id = std::string(obj.at("toolCallId").as_string()),
-                .delta = std::string(obj.at("argsTextDelta").as_string()),
-            };
+            auto id = ai::json::get_string(*val, "toolCallId");
+            auto delta = ai::json::get_string(*val, "argsTextDelta");
+            if (!id || !delta) return std::nullopt;
+            return ToolInputDelta{.id = std::move(*id), .delta = std::move(*delta)};
         }
         case '3': {
-            auto val = json::parse(payload);
-            auto& obj = val.as_object();
-            return ToolInputEnd{.id = std::string(obj.at("toolCallId").as_string())};
+            auto id = ai::json::get_string(*val, "toolCallId");
+            if (!id) return std::nullopt;
+            return ToolInputEnd{.id = std::move(*id)};
         }
         case 'd': {
-            auto val = json::parse(payload);
-            auto& obj = val.as_object();
+            if (!val->is_object()) return std::nullopt;
             FinishReason reason = FinishReason::Stop;
-            if (obj.contains("finishReason")) {
-                auto fr = std::string(obj.at("finishReason").as_string());
-                if (fr == "length") reason = FinishReason::Length;
-                else if (fr == "tool-calls") reason = FinishReason::ToolCalls;
+            if (auto fr = ai::json::get_string(*val, "finishReason")) {
+                if (*fr == "length") reason = FinishReason::Length;
+                else if (*fr == "tool-calls") reason = FinishReason::ToolCalls;
             }
             Usage usage;
-            if (obj.contains("usage")) {
-                auto& u = obj.at("usage").as_object();
-                if (u.contains("promptTokens")) usage.input_tokens.total = (int)u.at("promptTokens").as_int64();
-                if (u.contains("completionTokens")) usage.output_tokens.total = (int)u.at("completionTokens").as_int64();
+            // `usage` is nested one level down, so it needs its own lookup
+            // before the accessors apply.
+            auto& obj = val->as_object();
+            if (auto it = obj.find("usage"); it != obj.end() && it->value().is_object()) {
+                if (auto p = ai::json::get_int(it->value(), "promptTokens")) {
+                    usage.input_tokens.total = static_cast<int>(*p);
+                }
+                if (auto c = ai::json::get_int(it->value(), "completionTokens")) {
+                    usage.output_tokens.total = static_cast<int>(*c);
+                }
             }
             return FinishPart{.reason = reason, .usage = usage};
         }
         case 'e': {
-            auto val = json::parse(payload);
-            return ErrorPart{.message = std::string(val.as_string())};
+            if (!val->is_string()) return std::nullopt;
+            return ErrorPart{.message = std::string(val->as_string())};
         }
     }
     return std::nullopt;

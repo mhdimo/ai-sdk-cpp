@@ -10,6 +10,8 @@
 #include <boost/asio.hpp>
 #include <boost/json.hpp>
 
+#include "temp_dir.hpp"
+
 #include <atomic>
 #include <filesystem>
 #include <memory>
@@ -32,22 +34,7 @@ T run(ai::Task<T> task, boost::asio::io_context& ioc) {
     return task.get();
 }
 
-fs::path make_unique_temp_dir() {
-    static std::atomic<unsigned> counter{0};
-    auto dir = fs::temp_directory_path() /
-               ("ai-sdk-store-test-" + std::to_string(++counter));
-    fs::create_directories(dir);
-    return dir;
-}
-
-struct TempDir {
-    fs::path path;
-    TempDir() : path(make_unique_temp_dir()) {}
-    ~TempDir() {
-        std::error_code ec;
-        fs::remove_all(path, ec);
-    }
-};
+using ai::test::TempDir;
 
 ai::SessionSnapshot make_snapshot() {
     ai::SessionSnapshot snap;

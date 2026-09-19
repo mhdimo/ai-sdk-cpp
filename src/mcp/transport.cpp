@@ -4,6 +4,7 @@
 #include <boost/json.hpp>
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -12,6 +13,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -105,9 +107,23 @@ struct StdioTransport::Impl {
         if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0) {
             throw std::runtime_error("MCP: failed to create pipes");
         }
+
+        // Reports why the child never became the server. Without this a wrong
+        // command surfaces as "EOF reading from server": execvp fails in the
+        // child, the parent sees only a closed pipe, and the user is told about
+        // the symptom instead of the cause. FD_CLOEXEC means a *successful* exec
+        // closes the write end, so a parent read returning 0 is proof the server
+        // started, and a full int in return means exec failed with that errno.
+        int exec_status[2];
+        if (pipe(exec_status) != 0) {
+            throw std::runtime_error("MCP: failed to create pipes");
+        }
+        fcntl(exec_status[1], F_SETFD, FD_CLOEXEC);
+
         pid_t pid = fork();
         if (pid < 0) throw std::runtime_error("MCP: failed to fork");
         if (pid == 0) {
+            close(exec_status[0]);
             close(stdin_pipe[1]);
             close(stdout_pipe[0]);
             dup2(stdin_pipe[0], STDIN_FILENO);
@@ -120,10 +136,27 @@ struct StdioTransport::Impl {
             for (auto& a : args) argv.push_back(a.c_str());
             argv.push_back(nullptr);
             execvp(command.c_str(), const_cast<char* const*>(argv.data()));
+            int exec_errno = errno;
+            // If even this write fails there is nothing useful left to say; the
+            // 127 exit status remains as the fallback signal.
+            ssize_t reported = write(exec_status[1], &exec_errno, sizeof(exec_errno));
+            (void)reported;
             _exit(127);
         }
         close(stdin_pipe[0]);
         close(stdout_pipe[1]);
+        close(exec_status[1]);
+
+        int exec_errno = 0;
+        ssize_t exec_report = read(exec_status[0], &exec_errno, sizeof(exec_errno));
+        close(exec_status[0]);
+        if (exec_report == static_cast<ssize_t>(sizeof(exec_errno))) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+            throw std::runtime_error(std::string("MCP: failed to spawn server process '") +
+                                     command + "': " + std::strerror(exec_errno));
+        }
+
         child_pid = pid;
         child_stdin = fdopen(stdin_pipe[1], "w");
         child_stdout = fdopen(stdout_pipe[0], "r");

@@ -2,6 +2,7 @@
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
 #include "ai_sdk.h"
+#include <cstdio>
 #include <string>
 #include <stdexcept>
 #include <vector>
@@ -76,6 +77,21 @@ private:
     ai_model_t model_;
 };
 
+/// The buffer a Python tool's output is reported through.
+///
+/// See the ownership note on ai_tool_result_t in bindings/c/ai_sdk.h: the
+/// library copies output_json into its own storage before the callback returns
+/// and keeps no reference afterwards, so the callback owns the buffer and only
+/// has to keep it alive across the return. A thread_local is that lifetime
+/// exactly. This used to allocate a fresh buffer per call with `new char[]`
+/// and free it nowhere, which leaks the output of every tool call for the life
+/// of the process -- unbounded for a long-running agent, and proportional to
+/// the data the tools return.
+static std::string& thread_buf() {
+    static thread_local std::string buf;
+    return buf;
+}
+
 struct PyToolEntry {
     std::string name;
     std::string description;
@@ -125,17 +141,12 @@ public:
                     output = json.attr("dumps")(result).cast<std::string>();
                 }
 
-                char* out_copy = new char[output.size() + 1];
-                std::copy(output.begin(), output.end(), out_copy);
-                out_copy[output.size()] = '\0';
-                res.output_json = out_copy;
+                thread_buf() = std::move(output);
+                res.output_json = thread_buf().c_str();
                 res.is_error = 0;
             } catch (const py::error_already_set& e_py) {
-                std::string err = e_py.what();
-                char* err_copy = new char[err.size() + 1];
-                std::copy(err.begin(), err.end(), err_copy);
-                err_copy[err.size()] = '\0';
-                res.output_json = err_copy;
+                thread_buf() = e_py.what();
+                res.output_json = thread_buf().c_str();
                 res.is_error = 1;
             }
             return res;
@@ -430,16 +441,34 @@ static std::unique_ptr<PyToolSet> py_standard_toolkit() {
     return PyToolSet::wrap(ai_standard_toolkit_create());
 }
 
+/// Copy a Python string into the SDK's reason buffer, truncating to fit.
+static void set_reason(char* buf, const std::string& text) {
+    if (!buf) return;
+    std::snprintf(buf, AI_REASON_MAX, "%s", text.c_str());
+}
+
 static std::unique_ptr<PyToolSet> py_with_permissions(PyToolSet& tools, py::function policy_fn) {
     // policy_fn(tool: str, input_json: str) -> int  (0=allow, 1=deny, 2=ask)
+    // or (decision: int, reason: str) to explain a refusal. The reason reaches
+    // the model as part of the tool result, so it should say what would have to
+    // change -- a model told only that a call was refused retries variants.
     // NOTE: the function is heap-allocated and kept alive for the toolset's
     // lifetime (one allocation per call; not GC'd).
     auto* fn = new py::function(std::move(policy_fn));
-    ai_permission_policy_fn c_fn = [](const char* tool, const char* input_json, void* ud) -> int {
+    ai_permission_policy_fn c_fn = [](const char* tool, const char* input_json, char* reason,
+                                      void* ud) -> int {
         auto* f = static_cast<py::function*>(ud);
         py::gil_scoped_acquire acquire;
         try {
-            return f->operator()(tool, input_json).cast<int>();
+            py::object result = f->operator()(tool, input_json);
+            if (py::isinstance<py::tuple>(result)) {
+                py::tuple t = result.cast<py::tuple>();
+                if (t.size() > 1 && !t[1].is_none()) {
+                    set_reason(reason, t[1].cast<std::string>());
+                }
+                return t.empty() ? AI_PERMISSION_DENY : t[0].cast<int>();
+            }
+            return result.cast<int>();
         } catch (...) {
             return AI_PERMISSION_DENY;  // fail closed
         }
@@ -502,7 +531,10 @@ PYBIND11_MODULE(_native, m) {
           "Returns a ToolSet with read_file/write_file/edit_file/glob/grep/bash.");
     m.def("with_permissions", &py_with_permissions,
           py::arg("tools"), py::arg("policy"),
-          "Wrap a ToolSet with a permission policy(policy)(tool, input_json) -> int (0=allow,1=deny,2=ask).");
+          "Wrap a ToolSet with a permission policy.\n\n"
+          "policy(tool, input_json) -> int (0=allow, 1=deny, 2=ask), or a\n"
+          "(decision, reason) tuple to explain a refusal. The reason is shown\n"
+          "to the model as part of the tool result.");
 
     m.def("generate_text", &py_generate_text,
           py::arg("model"),

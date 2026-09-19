@@ -4,6 +4,8 @@ on:
   push:
     branches: [main, "feat/**"]
   pull_request:
+  # Lets the live tier (below) be run by hand; it never runs on push/PR.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -61,3 +63,82 @@ jobs:
         run: cmake --build build --config Release
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
+
+  # The Node addon links the C shared library, so it needs the C++ build first.
+  # Its tests are hermetic (a mock provider server, no API keys).
+  node-binding:
+    name: Node binding (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libssl-dev cmake ninja-build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the C library
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DAI_SDK_BUILD_TESTS=OFF \
+            -DAI_SDK_BUILD_EXAMPLES=OFF \
+            -DAI_SDK_BUILD_CLI=OFF
+          cmake --build build --config Release
+
+      - name: Build the addon
+        working-directory: bindings/node
+        run: |
+          npm install
+          npm run build
+
+      - name: Test
+        working-directory: bindings/node
+        run: npm run test:only
+
+  # The live tier talks to a real provider, so it is manual-only and needs a
+  # secret. It skips itself (rather than failing) when the secret is absent,
+  # which is the case on forks.
+  live-binding:
+    name: Live provider smoke (DeepSeek)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-all-dev libssl-dev cmake ninja-build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the C library
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DAI_SDK_BUILD_TESTS=OFF \
+            -DAI_SDK_BUILD_EXAMPLES=OFF \
+            -DAI_SDK_BUILD_CLI=OFF
+          cmake --build build --config Release
+
+      - name: Build the addon
+        working-directory: bindings/node
+        run: |
+          npm install
+          npm run build
+
+      - name: Run the live tier
+        working-directory: bindings/node
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -z "$DEEPSEEK_API_KEY" ]; then
+            echo "::warning::DEEPSEEK_API_KEY is not set — skipping the live tier"
+            exit 0
+          fi
+          npm run test:live

@@ -16,18 +16,40 @@ enum class PermissionDecision {
     Ask,    ///< escalate to the interactive Approver (if any)
 };
 
+/// A policy's answer: the decision, and optionally why.
+///
+/// The reason is shown to the model when the call is refused, so it should say
+/// what would have to change rather than restate the refusal. A model that is
+/// told "the user declined" stops; one that is told nothing retries variants,
+/// and every retry is another approval prompt for a user who already answered.
+///
+/// Implicitly constructible from a bare PermissionDecision, so a rule with
+/// nothing to explain can keep returning Allow/Deny/Ask directly.
+struct PermissionVerdict {
+    PermissionDecision decision;
+    std::string reason;
+
+    PermissionVerdict() : decision(PermissionDecision::Allow) {}
+    // NOLINTNEXTLINE(google-explicit-constructor) — deliberate, see above.
+    PermissionVerdict(PermissionDecision d) : decision(d) {}
+    PermissionVerdict(PermissionDecision d, std::string why)
+        : decision(d), reason(std::move(why)) {}
+};
+
 /// Result of an interactive approval. When `decision == Allow` and
 /// `always_allow` is true, the tool is added to a session-local allowlist so
 /// subsequent calls skip the approver.
 struct Approval {
     PermissionDecision decision;
     bool always_allow = false;
+    /// Shown to the model when this refuses a call. Empty for none.
+    std::string reason;
 };
 
 /// Synchronous permission rule: inspect (tool, input) and return a decision
 /// with no I/O. Acts as a fast path before any interactive Approver. A missing
 /// (empty) policy means "Allow everything".
-using PermissionPolicy = std::function<PermissionDecision(
+using PermissionPolicy = std::function<PermissionVerdict(
     const std::string& tool,
     const boost::json::value& input
 )>;
@@ -45,13 +67,17 @@ using Approver = std::function<Task<Approval>(
 /// wrapped in a permission gate. The gate applies `policy` first:
 ///   - Allow -> run the tool;
 ///   - Deny  -> return `{ "error": "permission_denied", "tool": <name> }`
-///              without running;
+///              without running, plus `"message": <reason>` when a reason was
+///              given;
 ///   - Ask   -> `co_await approver` (if provided). An approval of
 ///              `{Allow, always_allow}` adds the tool to a session-local
 ///              allowlist so later calls skip the approver. With no approver
 ///              wired, `Ask` is treated as `Deny` (safe default).
 /// Tools without an `execute` (schema-only) are copied unchanged. A missing
 /// (empty) policy makes the gate pass-through (Allow).
+///
+/// The denial reaches the model as the tool's result, so `reason` is how it
+/// learns that retrying will not help.
 ToolSet with_permissions(ToolSet tools, PermissionPolicy policy, Approver approver = {});
 
 } // namespace ai

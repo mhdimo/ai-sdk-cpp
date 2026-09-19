@@ -1,6 +1,7 @@
 add_executable(ai-sdk-tests
     test_json_schema.cpp
     test_sse_parser.cpp
+    test_base64.cpp
     test_validator.cpp
     test_messages.cpp
     test_cancellation.cpp
@@ -19,6 +20,7 @@ add_executable(ai-sdk-tests
     test_embeddings.cpp
     test_rerank.cpp
     test_middleware.cpp
+    test_data_stream.cpp
 )
 
 target_link_libraries(ai-sdk-tests PRIVATE
@@ -47,6 +49,17 @@ endif()
 if(AI_SDK_PROVIDER_OPENAI)
     target_sources(ai-sdk-tests PRIVATE test_openai_reasoning.cpp)
     target_link_libraries(ai-sdk-tests PRIVATE ai-sdk-openai)
+endif()
+
+# Provider construction and option forwarding. Every provider named here has to
+# be linked for its headers to resolve, so the test compiles only when the set
+# of enabled providers covers what it exercises.
+if(AI_SDK_PROVIDER_OPENAI AND AI_SDK_PROVIDER_ANTHROPIC
+   AND AI_SDK_PROVIDER_DEEPSEEK AND AI_SDK_PROVIDER_ZAI
+   AND AI_SDK_PROVIDER_MOONSHOTAI AND AI_SDK_PROVIDER_OPENAI_COMPATIBLE)
+    target_sources(ai-sdk-tests PRIVATE test_providers.cpp)
+    target_link_libraries(ai-sdk-tests PRIVATE
+        ai-sdk-deepseek ai-sdk-zai ai-sdk-moonshotai ai-sdk-openai-compatible)
 endif()
 
 include(CTest)

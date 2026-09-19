@@ -2,6 +2,8 @@
 build/
 _deps/
 .cache/
+# scripts/coverage.sh's instrumented tree (it is not covered by `build/` above).
+build-coverage/
 
 # CMake generated files
 CMakeCache.txt
@@ -20,6 +22,10 @@ compile_commands.json
 *.dylib
 *.dll
 
+# Coverage profiles (LLVM_PROFILE_FILE / llvm-profdata output)
+*.profraw
+*.profdata
+
 # macOS
 .DS_Store
 build_py/
@@ -33,3 +39,14 @@ __pycache__/
 # Node
 node_modules/
 bindings/node/dist/
+# Per-platform binaries produced by bindings/node/scripts/make-prebuild.sh.
+# Built by .github/workflows/prebuilds.yml and assembled at publish time; they
+# are several megabytes per platform and do not belong in the repository.
+prebuilds/
+# make-prebuild.sh's C++ build tree (not covered by `build/` above).
+build-prebuild/
+
+# Secrets — API keys for live tests are read from the environment, never a file
+.env
+.env.*
+!.env.example

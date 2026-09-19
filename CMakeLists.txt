@@ -1,9 +1,40 @@
 cmake_minimum_required(VERSION 3.20)
-project(ai-sdk-cpp VERSION 0.1.0 LANGUAGES CXX)
+project(ai-sdk-cpp VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# GCC 11 and 12 cannot build a working library from this source, and the way
+# they fail is worth stating precisely, because it is not the way one expects.
+#
+# They first refuse outright: the assembler rejects the operator() of a
+# coroutine lambda declared inside a function with C language linkage as a
+# duplicate symbol. That failure is loud and is what bindings/c/ai_sdk.cpp was
+# rearranged to avoid. Past it, they miscompile the coroutines badly enough
+# that 30 of the 158 unit tests crash -- streaming, sessions, tool execution,
+# the C binding's permission gates. Measured on ubuntu:22.04 and ubuntu:24.04,
+# at both -O0 and -O3, against Boost 1.83: GCC 11.4 and GCC 12.3 each fail the
+# same 30, and only the compiler differs between a passing and a failing run.
+# GCC 13 and Clang pass all 158.
+#
+# So the honest outcome on GCC 11/12 is a library that builds cleanly and then
+# segfaults, which is a much worse thing to hand someone than a build error.
+# Refuse by name instead. These versions are still the default on Ubuntu 22.04,
+# RHEL 9 and Debian 12, so this is not a rare configuration to arrive in --
+# Clang is available on all three and builds this fine.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13
+        AND NOT AI_SDK_ALLOW_UNSUPPORTED_COMPILER)
+    message(FATAL_ERROR
+        "GCC ${CMAKE_CXX_COMPILER_VERSION} cannot build this project. Its coroutine "
+        "support is broken for the pattern the library relies on: the tests fail by "
+        "crashing, and a build that succeeds would still be a library that segfaults "
+        "at runtime.\n"
+        "Use GCC 13 or newer, or Clang.\n"
+        "To build anyway and accept the breakage -- for example to reproduce it -- "
+        "configure with -DAI_SDK_ALLOW_UNSUPPORTED_COMPILER=ON.")
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Build all targets position-independent so the static core/providers can be
 # linked into the shared C binding (libai_sdk.so). Required on Linux; harmless
@@ -26,6 +57,51 @@ option(AI_SDK_PROVIDER_MOONSHOTAI "Build MoonshotAI provider" ON)
 option(AI_SDK_PROVIDER_ZAI "Build z.ai (GLM) provider" ON)
 option(AI_SDK_PROVIDER_BEDROCK "Build Amazon Bedrock provider" ON)
 option(AI_SDK_PROVIDER_OPENAI_COMPATIBLE "Build OpenAI-Compatible provider" ON)
+option(AI_SDK_COVERAGE "Instrument for Clang source-based coverage (see scripts/coverage.sh)" OFF)
+# Escape hatch for the compiler gate near the top of this file. Off by default
+# because the thing it permits is a library that crashes; see the comment there.
+option(AI_SDK_ALLOW_UNSUPPORTED_COMPILER "Build on a compiler measured to produce a broken library (GCC < 13)" OFF)
+
+# Whether the shared C binding carries its own copy of the C++ runtime.
+#
+# This is the artifact that ships, and on Linux it has to start on distributions
+# older than the one that built it. libstdc++ versions its symbols, so the usual
+# shape -- a build image years ahead of the target -- produces a library that
+# refuses to load, on the user's machine, which is the one place the check
+# cannot run. Linking the runtime in removes the dependency: the result needs
+# only libc, libm and the ELF loader.
+#
+# Default on for GNU, and off otherwise for a reason rather than by omission.
+# This project configures Clang on Linux with -stdlib=libc++, and there is no
+# -static-libc++ to match -static-libstdc++; defaulting it on there would give
+# an option that reports itself enabled while doing nothing at all, which is the
+# exact class of defect it exists to prevent. Turn it on with Clang and the
+# build says so instead.
+if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    option(AI_SDK_STATIC_CXX_RUNTIME "Link the C++ runtime into the shared C binding" ON)
+else()
+    option(AI_SDK_STATIC_CXX_RUNTIME "Link the C++ runtime into the shared C binding" OFF)
+endif()
+
+# The version the runtime reports (ai_sdk_version(), the MCP clientInfo block).
+# Sourced from the project version so it cannot drift from the release number
+# the manifests carry. See include/ai/version.hpp.
+add_compile_definitions(AI_SDK_VERSION="${PROJECT_VERSION}")
+
+# Coverage instrumentation. These flags only make the build *emit* .profraw
+# files; turning those into a report needs llvm-profdata + llvm-cov, which is
+# what scripts/coverage.sh drives. Clang-specific: the profile format is read
+# back by llvm-cov, which will not read GCC's gcov output.
+if(AI_SDK_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "AI_SDK_COVERAGE requires Clang (found ${CMAKE_CXX_COMPILER_ID}). "
+            "llvm-cov reads the profile Clang emits; GCC would need gcov instead.")
+    endif()
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+    # The profiling runtime has to be linked in too, or nothing writes a profile.
+    add_link_options(-fprofile-instr-generate)
+endif()
 
 # Expose provider enablement to the preprocessor so the CLI / C binding can
 # conditionally compile provider code (they include all providers by default).

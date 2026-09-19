@@ -1,0 +1,205 @@
+name: Prebuilds
+
+# Builds the native binaries that `npm install ai-sdk-cpp` resolves at runtime.
+#
+# This workflow is the difference between a package that installs and one that
+# does not: the tarball ships prebuilds/, and node-gyp-build picks the one
+# matching the user's platform. With nothing in prebuilds/ every install fails
+# at require() with "No native build was found", on every machine.
+#
+# Runs on a tag so a release is built from the tag itself, and by hand so the
+# matrix can be exercised without cutting one.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  prebuild:
+    name: Prebuild (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The runner image sets how old a system the artifact will run on:
+          # glibc versions its symbols, so one built on a newer distro refuses
+          # to start on an older one. 22.04 puts the floor at glibc 2.35, which
+          # covers Ubuntu 22.04, Debian 12 and anything later. Moving either
+          # Linux job to a newer image silently narrows that -- keep them
+          # matched, or knowingly accept the difference.
+          #
+          # The image is on a clock. GitHub put ubuntu-22.04 into deprecation on
+          # 2026-09-17, with brownout windows in March and April 2027 and full
+          # retirement on 2027-04-17. It still runs today, so 1.0.0 is not
+          # affected -- but the deadline is real and the obvious migration is
+          # the wrong one: ubuntu-24.04 raises the floor to glibc 2.39 and drops
+          # every Ubuntu 22.04 and Debian 12 user, who then have no prebuild and
+          # no source fallback, so `npm install` fails outright for them.
+          #
+          # The fix that keeps both is to run the build inside an
+          # `ubuntu:22.04` container on a newer runner, which decouples the
+          # runner label from the glibc the artifact records. That is the shape
+          # `scripts/` verification for this release used, so it is known to
+          # work: the container builds, links and loads the prebuild, and
+          # reports GLIBC_2.35. Do that before April 2027 rather than reacting
+          # to a brownout.
+          - runner: ubuntu-22.04
+            target: linux-x64
+          - runner: ubuntu-22.04-arm
+            target: linux-arm64
+          # macos-15-intel is the last Intel image GitHub will publish; 14 and
+          # later are Apple Silicon. Two runners, because one prebuild cannot
+          # serve both architectures.
+          #
+          # This was macos-13, which GitHub retired on 2025-12-04 -- a job on a
+          # retired label does not build and fail, it dies with "The
+          # configuration 'macos-13-us-default' is not supported", so the leg
+          # never runs. With `assemble` behind `needs: prebuild` and no `if:`,
+          # one dead label means no tarball at all.
+          #
+          # Intel runners have an endpoint: GitHub stops publishing them when
+          # the macOS 15 image retires, currently slated for late 2027. The
+          # darwin-x64 prebuild disappears then unless it is cross-compiled
+          # from Apple Silicon, which needs an x86_64 OpenSSL to link against.
+          # Worth knowing a year out rather than discovering it on a tag.
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: macos-14
+            target: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+
+          # GCC 13, not the image's g++-11. The build refuses anything older by
+          # name, because GCC 11 and 12 miscompile this project's coroutines
+          # into a library that segfaults -- so this is a requirement, not a
+          # preference for a newer compiler.
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y g++-13 libssl-dev cmake ninja-build curl
+          echo "CC=gcc-13" >> "$GITHUB_ENV"
+          echo "CXX=g++-13" >> "$GITHUB_ENV"
+
+          # Boost 1.82 or newer, which 22.04 does not carry: its repositories
+          # stop at 1.74 and the build needs 1.82. The headers are the entire
+          # requirement -- the project links Boost::headers and nothing else, so
+          # Boost is never compiled, and unpacking the release tarball takes a
+          # minute where building it from source would take ten.
+          #
+          # Not solved by moving to a 24.04 image, which has Boost 1.83: the
+          # image also sets the glibc floor, and 24.04 would raise it to 2.39
+          # and cut off the distributions the 22.04 matrix entries exist to
+          # serve. See the note on the matrix above.
+          curl -fsSL -o /tmp/boost.tar.gz \
+            https://archives.boost.io/release/1.83.0/source/boost_1_83_0.tar.gz
+          sudo mkdir -p /opt/boost
+          sudo tar xzf /tmp/boost.tar.gz -C /opt/boost --strip-components=1
+          echo "BOOST_ROOT=/opt/boost" >> "$GITHUB_ENV"
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install boost openssl cmake ninja
+
+          # OPENSSL_ROOT_DIR, not OpenSSL_DIR. The project calls
+          # find_package(OpenSSL REQUIRED), which resolves through CMake's
+          # FindOpenSSL.cmake -- module mode -- and that reads OPENSSL_ROOT_DIR.
+          # OpenSSL_DIR is the hint for *config* mode (the directory holding
+          # OpenSSLConfig.cmake) and FindOpenSSL does not consult it, so setting
+          # it looks right and does nothing.
+          #
+          # It also cannot be caught locally, which is why this is worth the
+          # comment: on a developer's Mac, Homebrew is already on the default
+          # search path, so configure succeeds whatever this step says. CI is
+          # the only place Homebrew's OpenSSL is keg-only and genuinely hidden
+          # -- and there the failure is "Could NOT find OpenSSL" on both macOS
+          # legs, which skips `assemble` in turn, so the release produces no
+          # tarball at all rather than a broken one.
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # --ignore-scripts: the install step is for package consumers deciding
+      # whether a prebuild exists, not for a checkout that is about to build
+      # one. Skipping it also keeps this job from needing node-gyp to configure.
+      - name: Install dependencies (Node)
+        working-directory: bindings/node
+        run: npm install --ignore-scripts
+
+      # The script builds the C++ library with a static OpenSSL, links the addon
+      # against it, and refuses to emit anything that depends on a path outside
+      # the package -- which is how a Homebrew OpenSSL nearly shipped.
+      - name: Build the prebuild
+        working-directory: bindings/node
+        run: npm run build:prebuild
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.target }}
+          path: bindings/node/prebuilds/${{ matrix.target }}
+          if-no-files-found: error
+
+  # Collects every platform into one package. Publishing is deliberately left
+  # to a human: `npm publish` is close to irreversible once someone installs
+  # it, and a tag push should not be able to do that on its own.
+  assemble:
+    name: Assemble the package
+    needs: prebuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Each artifact lands as prebuilds/prebuild-<target>/ because that is the
+      # artifact name. node-gyp-build looks for prebuilds/<platform>-<arch>, so
+      # the prefix has to come off.
+      - uses: actions/download-artifact@v4
+        with:
+          path: bindings/node/prebuilds
+          pattern: prebuild-*
+
+      - name: Strip the artifact-name prefix
+        working-directory: bindings/node/prebuilds
+        run: |
+          for dir in prebuild-*; do
+            mv "$dir" "${dir#prebuild-}"
+          done
+          echo "assembled:"
+          ls -1
+
+      - name: Install dependencies (Node)
+        working-directory: bindings/node
+        run: npm install --ignore-scripts
+
+      # prepublishOnly runs the prebuild check and compiles the TypeScript. The
+      # check is the point: it fails if any platform is missing its binary,
+      # which is the one packaging mistake that is invisible until a user hits
+      # it.
+      - name: Build the package
+        working-directory: bindings/node
+        run: npm run prepublishOnly
+
+      - name: Pack
+        working-directory: bindings/node
+        run: npm pack --pack-destination .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: bindings/node/ai-sdk-cpp-*.tgz
+          if-no-files-found: error

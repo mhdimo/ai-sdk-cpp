@@ -219,9 +219,18 @@ cd build && ./tests/unit/ai-sdk-tests "[message]"
 
 # Run a single test by name
 ctest --test-dir build -R "SseParser parses basic event"
+
+# What did those tests actually exercise? (Clang coverage; --html for a browsable report)
+./scripts/coverage.sh
 ```
 
 Unit tests mock HTTP responses and run without network access. Integration tests require API keys.
+
+The unit tests substitute their own `ai::http::IHttpClient`, so they cover the
+providers, the agent loop and the session layer but not the socket layer or the C
+binding. Those are covered by the Node suite, which drives them against a real
+server on `127.0.0.1`. The two are complementary; `scripts/coverage.sh` measures
+only the former and says so in its output.
 
 ## Language Bindings
 
