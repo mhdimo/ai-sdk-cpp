@@ -82,9 +82,10 @@ interface NativeToolSet {
 }
 interface NativeAgent {
   call(prompt: string): Promise<NativeResult>;
+  callStream(prompt: string, callback: StreamCallback): void;
 }
 type ToolCallback = (toolName: string, inputJson: string) => Promise<{ output: string; isError: boolean }> | { output: string; isError: boolean };
-type StreamCallback = (type: string, text: string | null, toolName: string | null, toolCallId: string | null, usage: { inputTokens: number; outputTokens: number } | null) => void;
+type StreamCallback = (type: string, text: string | null, toolName: string | null, toolCallId: string | null, usage: { inputTokens: number; outputTokens: number; finishReason: string } | null) => void;
 
 interface NativeGenerateOpts {
   prompt?: string;
@@ -172,6 +173,9 @@ export interface GenerateTextOptions {
   model: Model;
   prompt?: string;
   system?: string;
+  /** Conversation history. The C ABI's prompt deserializer carries text parts
+   *  only: system/user/assistant text works, while tool messages and
+   *  file/image parts are dropped. Use a Session to keep tool-loop history. */
   messages?: Array<{ role: string; content: string }>;
   tools?: ToolDefinition[];
   maxSteps?: number;
@@ -191,24 +195,6 @@ export interface GenerateResult {
 }
 
 export async function generateText(opts: GenerateTextOptions): Promise<GenerateResult> {
-  let nativeToolSet: NativeToolSet | undefined;
-
-  if (opts.tools && opts.tools.length > 0) {
-    nativeToolSet = new native.ToolSet();
-    for (const t of opts.tools) {
-      nativeToolSet.add(t.name, t.description, JSON.stringify(t.schema), async (toolName, inputJson) => {
-        const input = JSON.parse(inputJson);
-        try {
-          const result = await t.execute(input);
-          const output = typeof result === 'string' ? result : JSON.stringify(result);
-          return { output, isError: false };
-        } catch (e: any) {
-          return { output: e.message ?? String(e), isError: true };
-        }
-      });
-    }
-  }
-
   const nativeOpts: NativeGenerateOpts = {
     prompt: opts.prompt,
     system: opts.system,
@@ -216,7 +202,7 @@ export async function generateText(opts: GenerateTextOptions): Promise<GenerateR
     maxOutputTokens: opts.maxOutputTokens,
     temperature: opts.temperature,
     providerOptions: opts.providerOptions,
-    toolSet: nativeToolSet,
+    toolSet: opts.tools && opts.tools.length > 0 ? buildNativeToolSet(opts.tools) : undefined,
   };
 
   if (opts.messages) {
@@ -238,8 +224,9 @@ export async function generateText(opts: GenerateTextOptions): Promise<GenerateR
 
 export interface StreamEvent {
   type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_call_end' | 'reasoning_start' | 'reasoning_delta' | 'reasoning_end' | 'tool_result' | 'step_finish' | 'finish' | 'error';
-  /** Token usage, populated on the finish event. */
-  usage?: { inputTokens: number; outputTokens: number };
+  /** Token usage, populated on the finish event. `finishReason` is `stop`,
+   *  `length`, `tool_calls`, or `other` (empty on a synthetic finish). */
+  usage?: { inputTokens: number; outputTokens: number; finishReason: string };
   text?: string;
   toolName?: string;
   toolCallId?: string;
@@ -256,28 +243,75 @@ const TEXT_EVENTS: ReadonlySet<StreamEvent['type']> = new Set([
   'error',
 ]);
 
-export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<StreamEvent> {
+/** Marshal JS tool definitions across the C boundary. Always returns a set —
+ *  the agent requires one even when it is empty. */
+function buildNativeToolSet(tools: ToolDefinition[]): NativeToolSet {
+  const nativeToolSet = new native.ToolSet();
+  for (const t of tools) {
+    nativeToolSet.add(t.name, t.description, JSON.stringify(t.schema), async (_toolName, inputJson) => {
+      const input = JSON.parse(inputJson);
+      try {
+        const result = await t.execute(input);
+        const output = typeof result === 'string' ? result : JSON.stringify(result);
+        return { output, isError: false };
+      } catch (e: any) {
+        return { output: e.message ?? String(e), isError: true };
+      }
+    });
+  }
+  return nativeToolSet;
+}
+
+/**
+ * Adapt a native start-with-callback stream to an async iterable.
+ *
+ * The native call is driven on a worker thread and invokes `emit` on the JS
+ * thread as events arrive. `onTerminal` fires once a terminal event has been
+ * seen — after the short drain delay — so callers can serialize turns without
+ * knowing about the queue.
+ */
+async function* drainNativeStream(
+  start: (emit: StreamCallback) => void,
+  onTerminal?: () => void,
+): AsyncGenerator<StreamEvent> {
   const queue: StreamEvent[] = [];
   let resolveWait: (() => void) | null = null;
   let finished = false;
 
-  let nativeToolSet: NativeToolSet | undefined;
-  if (opts.tools && opts.tools.length > 0) {
-    nativeToolSet = new native.ToolSet();
-    for (const t of opts.tools) {
-      nativeToolSet.add(t.name, t.description, JSON.stringify(t.schema), async (toolName, inputJson) => {
-        const input = JSON.parse(inputJson);
-        try {
-          const result = await t.execute(input);
-          const output = typeof result === 'string' ? result : JSON.stringify(result);
-          return { output, isError: false };
-        } catch (e: any) {
-          return { output: e.message ?? String(e), isError: true };
-        }
-      });
+  const emit: StreamCallback = (type, text, toolName, toolCallId, usage) => {
+    const event: StreamEvent = { type: type as StreamEvent['type'] };
+    if (text || TEXT_EVENTS.has(event.type)) event.text = text ?? '';
+    if (toolName) event.toolName = toolName;
+    if (toolCallId) event.toolCallId = toolCallId;
+    if (usage) event.usage = usage;
+    queue.push(event);
+    if ((type === 'finish' && usage?.finishReason !== 'tool_calls') || type === 'error') {
+      finished = true;
+      // Session streams emit their tool-result events AFTER the final finish.
+      // Brief wait for them to arrive before the generator exits.
+      setTimeout(() => {
+        if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
+        onTerminal?.();
+      }, 200);
     }
-  }
+    if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
+  };
 
+  start(emit);
+
+  try {
+    while (!finished || queue.length > 0) {
+      if (queue.length === 0) {
+        await new Promise<void>((r) => { resolveWait = r; });
+      }
+      while (queue.length > 0) yield queue.shift()!;
+    }
+  } finally {
+    if (finished) onTerminal?.();
+  }
+}
+
+export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<StreamEvent> {
   const nativeOpts: NativeGenerateOpts = {
     prompt: opts.prompt,
     system: opts.system,
@@ -286,32 +320,11 @@ export async function* streamText(opts: GenerateTextOptions): AsyncGenerator<Str
     maxOutputTokens: opts.maxOutputTokens,
     temperature: opts.temperature,
     providerOptions: opts.providerOptions,
-    toolSet: nativeToolSet,
+    toolSet: opts.tools && opts.tools.length > 0 ? buildNativeToolSet(opts.tools) : undefined,
   };
 
   // native.streamText returns immediately; events arrive asynchronously.
-  native.streamText(opts.model._native, nativeOpts, (type, text, toolName, toolCallId, usage) => {
-    const event: StreamEvent = { type: type as StreamEvent['type'] };
-    if (text || TEXT_EVENTS.has(event.type)) event.text = text ?? '';
-    if (toolName) event.toolName = toolName;
-    if (toolCallId) event.toolCallId = toolCallId;
-    if (usage) event.usage = usage;
-    queue.push(event);
-    if ((type === 'finish' && (usage as any)?.finishReason !== 'tool_calls') || type === 'error') {
-      finished = true;
-      // The C binding emits tool-call-result events AFTER the stream finishes.
-      // Brief wait for them to arrive before the generator exits.
-      setTimeout(() => { if (resolveWait) { const r = resolveWait; resolveWait = null; r(); } }, 200);
-    }
-    if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
-  });
-
-  while (!finished || queue.length > 0) {
-    if (queue.length === 0) {
-      await new Promise<void>((r) => { resolveWait = r; });
-    }
-    while (queue.length > 0) yield queue.shift()!;
-  }
+  yield* drainNativeStream((emit) => native.streamText(opts.model._native, nativeOpts, emit));
 }
 
 export class Agent {
@@ -326,19 +339,7 @@ export class Agent {
     extraToolSets?: StandardToolSet[];
     providerOptions?: Record<string, Record<string, unknown>>;
   }) {
-    const toolSet = new native.ToolSet();
-    for (const t of opts.tools) {
-      toolSet.add(t.name, t.description, JSON.stringify(t.schema), async (toolName, inputJson) => {
-        const input = JSON.parse(inputJson);
-        try {
-          const result = await t.execute(input);
-          const output = typeof result === 'string' ? result : JSON.stringify(result);
-          return { output, isError: false };
-        } catch (e: any) {
-          return { output: e.message ?? String(e), isError: true };
-        }
-      });
-    }
+    const toolSet = buildNativeToolSet(opts.tools);
     // Merge in extra tool sets (e.g. MCP tools from mcpToolsetFromServer).
     if (opts.extraToolSets) {
       for (const extra of opts.extraToolSets) {
@@ -367,6 +368,15 @@ export class Agent {
       },
       steps: result.steps,
     };
+  }
+
+  /** Stream a turn through the agent's tool loop. Events have the same shape
+   *  as `streamText`'s. A `finish` whose reason is `tool_calls` is followed by
+   *  the next model step, so only a non-`tool_calls` finish terminates the
+   *  stream. (Tool *output* is not surfaced as an event here; only
+   *  `Session.sendStream` emits `tool_result`.) */
+  callStream(prompt: string): AsyncGenerator<StreamEvent> {
+    return drainNativeStream((emit) => this._native.callStream(prompt, emit));
   }
 }
 
@@ -549,42 +559,13 @@ export class Session {
     if (this._activePromise) {
       await this._activePromise;
     }
-    let resolveActive: any = null;
+    let resolveActive: (() => void) | null = null;
     this._activePromise = new Promise<void>((r) => { resolveActive = r; });
 
-    const queue: StreamEvent[] = [];
-    let resolveWait: (() => void) | null = null;
-    let finished = false;
-
-    this._native.sendStream(prompt, (type, text, toolName, toolCallId, usage) => {
-      const ev: StreamEvent = { type: type as StreamEvent['type'] };
-      if (text || TEXT_EVENTS.has(ev.type)) ev.text = text ?? '';
-      if (toolName) ev.toolName = toolName;
-      if (toolCallId) ev.toolCallId = toolCallId;
-      if (usage) ev.usage = usage;
-      queue.push(ev);
-      if ((type === "finish" && (usage as any)?.finishReason !== "tool_calls") || type === "error") {
-        finished = true;
-        setTimeout(() => {
-          if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
-          if (resolveActive) { resolveActive(); }
-        }, 200);
-      }
-      if (resolveWait) { const r = resolveWait; resolveWait = null; r(); }
-    });
-
-    try {
-      while (!finished || queue.length > 0) {
-        if (queue.length === 0) {
-          await new Promise<void>((r) => { resolveWait = r; });
-        }
-        while (queue.length > 0) yield queue.shift()!;
-      }
-    } finally {
-      if (finished && resolveActive) {
-        resolveActive();
-      }
-    }
+    yield* drainNativeStream(
+      (emit) => this._native.sendStream(prompt, emit),
+      () => resolveActive?.(),
+    );
   }
 }
 

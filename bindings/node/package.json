@@ -16,7 +16,8 @@
   "files": [
     "dist/",
     "prebuilds/",
-    "scripts/install.cjs"
+    "scripts/install.cjs",
+    "PARITY.md"
   ],
   "dependencies": {
     "node-addon-api": "^7.0.0",

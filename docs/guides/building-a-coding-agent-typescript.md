@@ -271,18 +271,35 @@ for await (const event of streamText({ model, prompt: 'Write a haiku about codin
     case 'text_delta':
       process.stdout.write(event.text!);
       break;
-    case 'tool_call':
+    case 'tool_call_start':
       console.log(`\n[calling ${event.toolName}...]`);
       break;
-    case 'tool_result':
-      console.log(`[${event.toolName} returned ${event.result!.length} chars]`);
+    case 'tool_call_end':
+      console.log('[arguments complete]');
       break;
     case 'finish':
-      console.log(`\n\nDone. Reason: ${event.finishReason}`);
+      console.log(`\n\nDone. Reason: ${event.usage!.finishReason}`);
+      break;
+    case 'error':
+      console.error(`\nstream failed: ${event.text}`);
       break;
   }
 }
 ```
+
+The full event set is `text_delta`, `tool_call_start`, `tool_call_delta`,
+`tool_call_end`, `reasoning_start`, `reasoning_delta`, `reasoning_end`,
+`finish`, and `error`. Token usage and the finish reason live on
+`event.usage`. A stream reports failures as a terminal `error` event rather
+than throwing — check for it, since an error also ends the iteration.
+
+`tool_result` is part of the event type, but the C ABI currently emits it only
+for `Session.sendStream` (see below); `streamText` and `Agent.callStream` do
+not produce it.
+
+The same events come from an agent's tool loop via `agent.callStream(prompt)`.
+A `finish` with reason `tool_calls` is followed by the next model step, so only
+a non-`tool_calls` finish (or an error) ends the stream.
 
 ---
 
@@ -319,30 +336,77 @@ The `Agent` class handles:
 
 ---
 
+## Sessions and Permissions
+
+`Session` keeps conversation history across turns and applies the context strategy for you, so the model remembers earlier turns without you rebuilding the prompt:
+
+```typescript
+import { Session } from 'ai-sdk-cpp';
+
+const session = new Session(agent, { memoryDir: './.memory', maxContextTokens: 100_000 });
+await session.send('My name is Liang.');
+console.log((await session.send('What did I just tell you?')).text);
+```
+
+With `memoryDir`, relevant persisted memory is injected before each turn and history auto-compacts near the token budget. `enableCheckpoint` (default `true`) writes a summary into memory every five turns, at the cost of an extra model call.
+
+For file writes and shell commands, wrap the tool set in a permission policy. The policy runs synchronously; an `Ask` verdict reaches your async approver, and anything that is not an explicit allow refuses the call:
+
+```typescript
+import { PermissionDecision, withPermissions } from 'ai-sdk-cpp';
+
+const guardedTools = withPermissions(
+  [readFile, writeFile, editFile, runCommand],
+  (tool, inputJson) => {
+    if (tool === 'read_file') return PermissionDecision.Allow;
+    return PermissionDecision.Ask;            // reach the approver below
+  },
+  async (tool, inputJson, rationale) => {
+    // Show `rationale` to the user; await their answer.
+    return (await confirm(rationale))
+      ? PermissionDecision.AllowAlways
+      : PermissionDecision.Deny;
+  },
+);
+
+const agent = new Agent({ model, tools: guardedTools, instructions: '...' });
+```
+
+`standardToolkit()` provides the same six tools (`read_file`, `write_file`, `edit_file`, `glob`, `grep`, `bash`) without hand-writing them.
+
+---
+
 ## Error Handling
 
-Tools should catch their own errors and return error messages as strings -- the model can then decide how to recover. For the outer agent call, wrap in try/catch:
+Tools should catch their own errors and return error messages as strings -- the model can then decide how to recover. For the outer agent call, wrap in try/catch and branch on `err.code`:
 
 ```typescript
 try {
   const result = await agent.call(userInput);
   console.log(result.text);
 } catch (err: any) {
-  if (err.code === 'MAX_STEPS_REACHED') {
-    console.error('Agent hit the step limit. Try a more specific prompt or increase maxSteps.');
-  } else if (err.code === 'PROVIDER_ERROR') {
-    console.error(`API error: ${err.message}`);
-  } else {
-    console.error(`Unexpected error: ${err.message}`);
+  switch (err.code) {
+    case 'AI_ERROR_RATE_LIMIT':
+    case 'AI_ERROR_API_CALL':
+      console.error(`Upstream API error: ${err.message}`);
+      break;
+    case 'AI_ERROR_AUTHENTICATION':
+      console.error('Check your provider API key.');
+      break;
+    case 'AI_ERROR_TIMEOUT':
+      console.error('The provider did not answer in time.');
+      break;
+    default:
+      console.error(`${err.code ?? 'Error'}: ${err.message}`);
   }
 }
 ```
 
-Common error codes:
-- `MAX_STEPS_REACHED` -- the agent used all its steps without finishing
-- `PROVIDER_ERROR` -- the upstream API returned an error (rate limit, auth, etc.)
-- `TOOL_EXECUTION_ERROR` -- a tool threw an unhandled exception
-- `INVALID_API_KEY` -- the API key env var is missing or invalid
+The codes come from the C ABI's `ai_status_t` enum: `AI_ERROR_INVALID_ARGUMENT`, `AI_ERROR_API_CALL`, `AI_ERROR_RATE_LIMIT`, `AI_ERROR_AUTHENTICATION`, `AI_ERROR_TIMEOUT`, `AI_ERROR_STREAM`, `AI_ERROR_CANCELLED`, `AI_ERROR_INVALID_RESPONSE`, `AI_ERROR_INTERNAL`.
+
+There is no `MAX_STEPS_REACHED`: reaching `maxSteps` ends the loop and returns the last result rather than throwing. Streaming returns a terminal `error` event instead of rejecting, and that event carries text only.
+
+Finer-grained core error types (HTTP status, retryability, response body) are not carried across the C ABI yet; see [bindings/node/PARITY.md](../../bindings/node/PARITY.md).
 
 ---
 
@@ -490,7 +554,7 @@ const agent = new Agent({
 | **Startup time** | Fast (precompiled binary) | Depends on bundler/runtime |
 | **Streaming** | Async iterables | Async iterables + React hooks |
 | **Framework integrations** | None (intentional) | React, Vue, Svelte, Angular, RSC |
-| **Tool execution** | Synchronous by default, in-process | Async, supports server actions |
+| **Tool execution** | Sync or async, in-process | Async, supports server actions |
 | **Package size** | Larger (includes native binary) | Smaller (pure JS) |
 | **Platform** | macOS, Linux, Windows (x64/arm64) | Anywhere Node/Deno/Bun/Edge runs |
 
@@ -510,10 +574,10 @@ const agent = new Agent({
 
 ## Next Steps
 
-- Add a **confirmation step** for destructive operations (file writes, command execution)
-- Implement **conversation history** so the agent remembers previous interactions
-- Add **token budget tracking** to warn before hitting context limits
-- Build a **permission system** that sandboxes file access to the project directory
+- Tighten the **permission policy** -- sandbox paths to the project directory and allow-list commands on top of `withPermissions`
+- Persist **conversation history** yourself, or keep a `Session` alive for the process; session snapshot/restore is core-only today
+- Track **token spend** from `result.usage` and warn before long sessions grow expensive
+- Compose a **task or subagent system** from several `Agent` instances
 - Integrate **git operations** so the agent can commit its own changes
 
 You now have everything you need to build a production-grade coding agent. The model does the thinking. The tools do the work. The native engine makes it fast. Go build something.

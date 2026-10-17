@@ -183,6 +183,10 @@ pip install ai-sdk-cpp
 npm install ai-sdk-cpp
 ```
 
+The Node binding exposes the C ABI, which is a subset of the C++ core. See
+[bindings/node/PARITY.md](../bindings/node/PARITY.md) for the item-by-item
+matrix and the open requirements.
+
 ### From Rust / Go / Any Language
 
 Link against `libai_sdk` (the C shared library) and include `ai_sdk.h`. See the language-specific guides below.

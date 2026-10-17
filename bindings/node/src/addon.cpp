@@ -65,6 +65,7 @@ public:
     AgentWrapper(const Napi::CallbackInfo& info);
     ~AgentWrapper();
     Napi::Value Call(const Napi::CallbackInfo& info);
+    Napi::Value CallStream(const Napi::CallbackInfo& info);
     ai_agent_t handle() const { return agent_; }
 
 private:
@@ -382,6 +383,7 @@ struct BlockingCallResult {
 
     Napi::Promise::Deferred deferred;
     bool ok = false;
+    ai_status_t status = AI_OK;
     std::string error;
     std::string text;
     std::string finishReason;
@@ -390,7 +392,8 @@ struct BlockingCallResult {
     int steps = 0;
 
     /** Copy out a finished C call and free it (every path frees exactly once). */
-    void take(ai_status_t status, ai_generate_result_t& r, const char* fallback) {
+    void take(ai_status_t call_status, ai_generate_result_t& r, const char* fallback) {
+        status = call_status;
         ok = (status == AI_OK);
         if (ok) {
             text = r.text ? r.text : "";
@@ -405,10 +408,30 @@ struct BlockingCallResult {
     }
 };
 
+// The C ABI's coarse failure kind, as a stable string for `err.code`. The core
+// has finer error classes (AuthenticationError, RateLimitError, ...), but only
+// this enum crosses the C boundary — see bindings/node/PARITY.md.
+static const char* status_code_name(ai_status_t status) {
+    switch (status) {
+        case AI_ERROR_INVALID_ARGUMENT: return "AI_ERROR_INVALID_ARGUMENT";
+        case AI_ERROR_API_CALL: return "AI_ERROR_API_CALL";
+        case AI_ERROR_RATE_LIMIT: return "AI_ERROR_RATE_LIMIT";
+        case AI_ERROR_AUTHENTICATION: return "AI_ERROR_AUTHENTICATION";
+        case AI_ERROR_TIMEOUT: return "AI_ERROR_TIMEOUT";
+        case AI_ERROR_STREAM: return "AI_ERROR_STREAM";
+        case AI_ERROR_CANCELLED: return "AI_ERROR_CANCELLED";
+        case AI_ERROR_INVALID_RESPONSE: return "AI_ERROR_INVALID_RESPONSE";
+        case AI_ERROR_INTERNAL: return "AI_ERROR_INTERNAL";
+        default: return "AI_ERROR_UNKNOWN";
+    }
+}
+
 // Settles the promise on the JS thread once the worker is done.
 static void ResolveBlockingCall(Napi::Env env, Napi::Function, BlockingCallResult* p) {
     if (!p->ok) {
-        p->deferred.Reject(Napi::Error::New(env, p->error).Value());
+        Napi::Error error = Napi::Error::New(env, p->error);
+        error.Set("code", Napi::String::New(env, status_code_name(p->status)));
+        p->deferred.Reject(error.Value());
     } else {
         Napi::Object obj = Napi::Object::New(env);
         obj.Set("text", Napi::String::New(env, p->text));
@@ -447,6 +470,7 @@ static Napi::Promise RunBlockingAsync(Napi::Env env, F work) {
 Napi::Object AgentWrapper::Init(Napi::Env env, Napi::Object exports) {
     Napi::Function func = DefineClass(env, "Agent", {
         InstanceMethod("call", &AgentWrapper::Call),
+        InstanceMethod("callStream", &AgentWrapper::CallStream),
     });
     exports.Set("Agent", func);
     return exports;
@@ -755,6 +779,26 @@ Napi::Value StreamText(const Napi::CallbackInfo& info) {
             opts.messages_json = messages_str.empty() ? nullptr : messages_str.c_str();
             opts.provider_options_json = provider_options_str.empty() ? nullptr : provider_options_str.c_str();
             return ai_stream_text(opts, cb, s);
+        });
+
+    return env.Undefined();
+}
+
+Napi::Value AgentWrapper::CallStream(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected (prompt, callback)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string prompt = info[0].As<Napi::String>().Utf8Value();
+    Napi::Function callback = info[1].As<Napi::Function>();
+    ai_agent_t agent = agent_;
+
+    RunStreamAsync(env, callback,
+        [agent, prompt](StreamSession* s, ai_stream_callback_fn cb) {
+            return ai_agent_call_stream(agent, prompt.c_str(), cb, s);
         });
 
     return env.Undefined();
