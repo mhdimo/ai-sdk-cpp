@@ -3,6 +3,38 @@
 All notable changes to ai-sdk-cpp. Format loosely based on
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.1] - 2026-10-17
+
+A Node-binding release. No C++ API changes; the same library, with a streaming
+agent entry point and errors a caller can branch on.
+
+### Added — Node binding
+- **`Agent.callStream(prompt)`** streams a turn through the agent's tool loop,
+  with the same event shapes as `streamText` and `Session.sendStream`. A
+  `finish` whose reason is `tool_calls` is followed by the next model step, so
+  only a non-`tool_calls` finish terminates the stream. Tool *output* is still
+  not surfaced on this path — only sessions emit `tool_result`.
+- **`PARITY.md`** documents, layer by layer, what the C++ core exposes versus
+  the C ABI and the Node binding, and lists the requirements filed against the
+  next engine release: stream error status, cancellation, structured errors,
+  tool results on every stream path, multipart prompts, and more.
+- The stream `finish` event's `finishReason` (`stop`, `length`, `tool_calls`,
+  `other`) is now declared in the TypeScript types. The binding already sent
+  it; the type did not, so callers had to cast.
+
+### Fixed — Node binding
+- **Rejected promises carry `err.code`** — the C ABI's `ai_status_t` value as a
+  stable string (`AI_ERROR_RATE_LIMIT`, `AI_ERROR_AUTHENTICATION`,
+  `AI_ERROR_TIMEOUT`, …), alongside the engine's message. Stream failures are
+  still text-only; that needs an ABI change (PARITY.md requirement 1).
+- One stream-drain helper now backs `streamText`, `Session.sendStream`, and
+  `Agent.callStream`, and one tool-set builder backs every entry point, so the
+  three paths cannot drift in how they marshal tools or terminate.
+
+### Changed — docs
+- The TypeScript guide now documents the stream events and error codes that
+  actually exist, instead of an invented set.
+
 ## [1.0.0] - 2026-09-18
 
 The bindings stop being a preview. The Node binding is now covered by a

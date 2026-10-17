@@ -1,6 +1,6 @@
 {
   "name": "ai-sdk-cpp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Native C++ AI agent framework with Node.js bindings",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
