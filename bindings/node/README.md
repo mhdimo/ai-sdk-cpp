@@ -58,8 +58,10 @@ for await (const event of streamText({ model, prompt: 'Write a haiku.' })) {
 
 Event types: `text_delta`, `tool_call_start`, `tool_call_delta`,
 `tool_call_end`, `reasoning_start`, `reasoning_delta`, `reasoning_end`,
-`tool_result`, `step_finish`, `finish`, `error`. Token usage arrives on the
-`finish` event.
+`finish`, `error` — plus `tool_result`, which the C ABI emits only on session
+streams (`Session.sendStream`). Token usage and the finish reason arrive on the
+`finish` event (`event.usage.finishReason`). `step_finish` is defined by the
+C ABI but is not currently reachable from Node.
 
 **Streaming reports failures as a terminal `error` event; it does not throw.**
 Always check for it — a stream that ends without one is a stream that succeeded.
@@ -79,11 +81,19 @@ const add = tool(
 
 const agent = new Agent({ model, tools: [add], instructions: 'Be concise.' });
 const result = await agent.call('What is 17 + 25?');
+
+// Or stream the same turn, with the same event shape as streamText().
+for await (const event of agent.callStream('What is 17 + 25?')) {
+  if (event.type === 'text_delta') process.stdout.write(event.text);
+}
 ```
 
 The agent runs the tool loop itself: it calls the model, executes the tools,
 feeds the results back, and repeats until the model finishes or `maxSteps` is
-reached. Independent tool calls within a single step run concurrently.
+reached. Independent tool calls within a single step run concurrently. While
+streaming, a `finish` whose reason is `tool_calls` means another model step is
+coming; only a `finish` with another reason (or an `error`) terminates the
+stream.
 
 ## Sessions
 
@@ -117,6 +127,31 @@ so set it to `false` if you do not want it.
 - `mergeToolSets(dest, src)` — combine tool sets.
 - `describeToolSet(tools)` — introspect a set as `{ name, description, inputSchema }`.
 - `MemoryStore`, `Batch`, `version()`.
+
+## Errors
+
+`generateText`, `Agent.call`, `Session.send`, and the other promise-returning
+entry points reject with an `Error` whose `code` is stable and comes from the
+C ABI's vocabulary:
+
+```
+AI_ERROR_INVALID_ARGUMENT   AI_ERROR_STREAM
+AI_ERROR_API_CALL           AI_ERROR_CANCELLED
+AI_ERROR_RATE_LIMIT         AI_ERROR_INVALID_RESPONSE
+AI_ERROR_AUTHENTICATION     AI_ERROR_INTERNAL
+AI_ERROR_TIMEOUT
+```
+
+The message is the engine's message. The C++ core's finer error classes and
+HTTP status are not carried across the C ABI yet; streaming failures surface as
+an `error` event with text only.
+
+## Parity with the C++ core
+
+This package binds the C ABI, which is deliberately smaller than the C++ core.
+[PARITY.md](PARITY.md) is the item-by-item matrix — what reaches Node, what
+stops at the C ABI, and what is core-only — and doubles as the requirements
+list for the next engine release.
 
 ## Behaviour worth knowing before you file a bug
 
